@@ -8,6 +8,8 @@
 #include <auto_damper/zbus.h>
 #include <zephyr/bluetooth/addr.h>
 #include <auto_damper/heater.h>
+#include <auto_damper/wifi.h>
+#include <auto_damper/wifi_config.h>
 
 extern int heater_ble_init(void);
 extern int heater_ble_scan(int timeout_sec);
@@ -305,8 +307,65 @@ static int cmd_ble_status(const struct shell *sh, size_t argc, char **argv)
 }
 
 //////////////////////////////////////////////////////////////
+// damper wifi save <ssid> <password>
+//////////////////////////////////////////////////////////////
+
+static int cmd_wifi_save(const struct shell *sh, size_t argc, char **argv)
+{
+  if (argc != 3) {
+    shell_error(sh, "Usage: damper wifi save <ssid> <password>");
+    return -EINVAL;
+  }
+
+  int rc = wifi_config_save(argv[1], argv[2]);
+  if (rc) {
+    shell_error(sh, "Failed to save: %d", rc);
+    return rc;
+  }
+
+  shell_print(sh, "Credentials saved, connecting...");
+
+  rc = wifi_connect(argv[1], argv[2]);
+  if (rc) {
+    shell_error(sh, "Connect failed: %d", rc);
+  }
+  return rc;
+}
+
+//////////////////////////////////////////////////////////////
+// damper wifi status
+//////////////////////////////////////////////////////////////
+
+static int cmd_wifi_status(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+
+  shell_print(sh, "WiFi Status:");
+  shell_print(sh, "  Connected: %s", wifi_is_connected() ? "yes" : "no");
+
+  if (wifi_is_connected()) {
+    char addr[16];
+    if (wifi_get_ip_address(addr, sizeof(addr)) == 0) {
+      shell_print(sh, "  IP:        %s", addr);
+    }
+  }
+
+  shell_print(sh, "  Stored:    %s",
+              wifi_config_exists() ? "yes" : "no");
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////
 // Shell Registration
 //////////////////////////////////////////////////////////////
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+    wifi_cmds,
+    SHELL_CMD_ARG(save, NULL, "Save credentials: damper wifi save <ssid> <pw>",
+                  cmd_wifi_save, 3, 0),
+    SHELL_CMD(status, NULL, "Show WiFi status", cmd_wifi_status),
+    SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
     ble_cmds,
@@ -329,6 +388,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
     SHELL_CMD(override, NULL, "Override: damper override <inside|outside|auto>",
               cmd_override),
     SHELL_CMD(ble, &ble_cmds, "BLE heater commands", NULL),
+    SHELL_CMD(wifi, &wifi_cmds, "WiFi commands", NULL),
     SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(damper, &damper_cmds, "Damper control commands", NULL);
