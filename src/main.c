@@ -9,6 +9,7 @@
 
 #include <auto_damper/damper.h>
 #include <auto_damper/zbus.h>
+#include <auto_damper/config.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
@@ -122,5 +123,14 @@ int servo_init(void)
     return -ENODEV;
   }
   LOG_INF("Servo initialized");
+  return 0;
+}
+
+int main(void)
+{
+  int rc = config_init();
+  if (rc) {
+    LOG_ERR("Config init failed: %d", rc);
+  }
   return 0;
 }
