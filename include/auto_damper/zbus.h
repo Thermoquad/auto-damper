@@ -3,6 +3,7 @@
 #define AUTO_DAMPER_ZBUS_H
 
 #include <zephyr/zbus/zbus.h>
+#include <auto_damper/heater.h>
 
 //////////////////////////////////////////////////////////////
 // Temperature Channel
@@ -58,5 +59,11 @@ struct damper_data {
 };
 
 ZBUS_CHAN_DECLARE(damper_data_chan);
+
+//////////////////////////////////////////////////////////////
+// Heater Data Channel
+//////////////////////////////////////////////////////////////
+
+ZBUS_CHAN_DECLARE(heater_data_chan);
 
 #endif
