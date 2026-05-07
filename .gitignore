@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+
+# APKs and decompiled source (reverse engineering working files)
+tmp/
+
+# Zephyr/west
+twister-out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+env:
+  BOARD: esp32_devkitc/esp32/procpu
+  SERIAL_PORT: /dev/ttyUSB0
+  BAUD: 115200
+
+tasks:
+  build-firmware:
+    desc: Build the auto-damper firmware
+    cmd: west build -b $BOARD
+
+  rebuild-firmware:
+    desc: Clean and rebuild the auto-damper firmware
+    cmd: west build -b $BOARD -p always
+
+  flash-firmware:
+    desc: Flash firmware to ESP32
+    deps:
+      - task: build-firmware
+    cmd: west flash --esp-device $SERIAL_PORT
+
+  menuconfig:
+    desc: Start menuconfig
+    cmds:
+      - west build -t menuconfig
+      - task: build-firmware
+
+  serial-terminal:
+    desc: Open serial console
+    interactive: true
+    cmd: minicom --baudrate $BAUD --device $SERIAL_PORT
+
+  auto-build:
+    desc: Build automatically when files change
+    watch: true
+    sources:
+      - src/**
+      - include/**
+      - boards/**
+      - prj.conf
+      - app.overlay
+      - CMakeLists.txt
+    cmd: west build
