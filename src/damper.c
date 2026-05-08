@@ -120,12 +120,12 @@ static void idle_entry(void *ctx)
   apply_route(DAMPER_ROUTE_OUTSIDE);
 }
 
-static void idle_run(void *ctx)
+static enum smf_state_result idle_run(void *ctx)
 {
   struct damper_ctx *d = ctx;
 
   if (d->mode == DAMPER_MODE_OVERRIDE) {
-    return;
+    return SMF_EVENT_HANDLED;
   }
 
   if (d->current_temp >= config.temp_high) {
@@ -133,6 +133,8 @@ static void idle_run(void *ctx)
   } else if (d->current_temp > 0.0) {
     smf_set_state(SMF_CTX(d), &states[DAMPER_STATE_ROUTING_OUTSIDE]);
   }
+
+  return SMF_EVENT_HANDLED;
 }
 
 //////////////////////////////////////////////////////////////
@@ -145,17 +147,19 @@ static void routing_inside_entry(void *ctx)
   apply_route(DAMPER_ROUTE_INSIDE);
 }
 
-static void routing_inside_run(void *ctx)
+static enum smf_state_result routing_inside_run(void *ctx)
 {
   struct damper_ctx *d = ctx;
 
   if (d->mode == DAMPER_MODE_OVERRIDE) {
-    return;
+    return SMF_EVENT_HANDLED;
   }
 
   if (d->current_temp < config.temp_low) {
     smf_set_state(SMF_CTX(d), &states[DAMPER_STATE_ROUTING_OUTSIDE]);
   }
+
+  return SMF_EVENT_HANDLED;
 }
 
 //////////////////////////////////////////////////////////////
@@ -168,17 +172,19 @@ static void routing_outside_entry(void *ctx)
   apply_route(DAMPER_ROUTE_OUTSIDE);
 }
 
-static void routing_outside_run(void *ctx)
+static enum smf_state_result routing_outside_run(void *ctx)
 {
   struct damper_ctx *d = ctx;
 
   if (d->mode == DAMPER_MODE_OVERRIDE) {
-    return;
+    return SMF_EVENT_HANDLED;
   }
 
   if (d->current_temp >= config.temp_high) {
     smf_set_state(SMF_CTX(d), &states[DAMPER_STATE_ROUTING_INSIDE]);
   }
+
+  return SMF_EVENT_HANDLED;
 }
 
 //////////////////////////////////////////////////////////////

@@ -97,12 +97,12 @@ static int send_json_error(struct http_response_ctx *rsp, char *buf,
 static char status_buf[JSON_BUF_SIZE];
 
 static int handle_api_status(struct http_client_ctx *client,
-                             enum http_data_status status,
+                             enum http_transaction_status status,
                              const struct http_request_ctx *req,
                              struct http_response_ctx *rsp,
                              void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -156,12 +156,12 @@ static char config_body[BODY_BUF_SIZE];
 static char config_resp[JSON_BUF_SIZE];
 
 static int handle_api_config(struct http_client_ctx *client,
-                             enum http_data_status status,
+                             enum http_transaction_status status,
                              const struct http_request_ctx *req,
                              struct http_response_ctx *rsp,
                              void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -243,12 +243,12 @@ static char override_body[BODY_BUF_SIZE];
 static char override_resp[JSON_BUF_SIZE];
 
 static int handle_api_override(struct http_client_ctx *client,
-                               enum http_data_status status,
+                               enum http_transaction_status status,
                                const struct http_request_ctx *req,
                                struct http_response_ctx *rsp,
                                void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -302,12 +302,12 @@ HTTP_RESOURCE_DEFINE(api_override_res, damper_http_service,
 static char ble_status_buf[JSON_BUF_SIZE];
 
 static int handle_api_ble_status(struct http_client_ctx *client,
-                                 enum http_data_status status,
+                                 enum http_transaction_status status,
                                  const struct http_request_ctx *req,
                                  struct http_response_ctx *rsp,
                                  void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -378,12 +378,12 @@ HTTP_RESOURCE_DEFINE(api_ble_status_res, damper_http_service,
 static char scan_resp[JSON_BUF_SIZE];
 
 static int handle_api_ble_scan(struct http_client_ctx *client,
-                               enum http_data_status status,
+                               enum http_transaction_status status,
                                const struct http_request_ctx *req,
                                struct http_response_ctx *rsp,
                                void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -437,12 +437,12 @@ HTTP_RESOURCE_DEFINE(api_ble_scan_res, damper_http_service,
 static char devices_buf[JSON_BUF_SIZE];
 
 static int handle_api_ble_devices(struct http_client_ctx *client,
-                                  enum http_data_status status,
+                                  enum http_transaction_status status,
                                   const struct http_request_ctx *req,
                                   struct http_response_ctx *rsp,
                                   void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -488,12 +488,12 @@ static char connect_body[BODY_BUF_SIZE];
 static char connect_resp[JSON_BUF_SIZE];
 
 static int handle_api_ble_connect(struct http_client_ctx *client,
-                                  enum http_data_status status,
+                                  enum http_transaction_status status,
                                   const struct http_request_ctx *req,
                                   struct http_response_ctx *rsp,
                                   void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -550,12 +550,12 @@ HTTP_RESOURCE_DEFINE(api_ble_connect_res, damper_http_service,
 static char disconnect_resp[128];
 
 static int handle_api_ble_disconnect(struct http_client_ctx *client,
-                                     enum http_data_status status,
+                                     enum http_transaction_status status,
                                      const struct http_request_ctx *req,
                                      struct http_response_ctx *rsp,
                                      void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -591,12 +591,12 @@ static char proto_body[BODY_BUF_SIZE];
 static char proto_resp[128];
 
 static int handle_api_ble_protocol(struct http_client_ctx *client,
-                                   enum http_data_status status,
+                                   enum http_transaction_status status,
                                    const struct http_request_ctx *req,
                                    struct http_response_ctx *rsp,
                                    void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -645,12 +645,12 @@ static char power_body[BODY_BUF_SIZE];
 static char power_resp[128];
 
 static int handle_api_ble_power(struct http_client_ctx *client,
-                                enum http_data_status status,
+                                enum http_transaction_status status,
                                 const struct http_request_ctx *req,
                                 struct http_response_ctx *rsp,
                                 void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -706,12 +706,12 @@ static char temp_body[BODY_BUF_SIZE];
 static char temp_resp[128];
 
 static int handle_api_ble_temp(struct http_client_ctx *client,
-                               enum http_data_status status,
+                               enum http_transaction_status status,
                                const struct http_request_ctx *req,
                                struct http_response_ctx *rsp,
                                void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -772,12 +772,12 @@ static char plevel_body[BODY_BUF_SIZE];
 static char plevel_resp[128];
 
 static int handle_api_ble_power_level(struct http_client_ctx *client,
-                                      enum http_data_status status,
+                                      enum http_transaction_status status,
                                       const struct http_request_ctx *req,
                                       struct http_response_ctx *rsp,
                                       void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
@@ -837,12 +837,12 @@ static char mode_body[BODY_BUF_SIZE];
 static char mode_resp[128];
 
 static int handle_api_ble_mode(struct http_client_ctx *client,
-                               enum http_data_status status,
+                               enum http_transaction_status status,
                                const struct http_request_ctx *req,
                                struct http_response_ctx *rsp,
                                void *user_data)
 {
-  if (status != HTTP_SERVER_DATA_FINAL) {
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 

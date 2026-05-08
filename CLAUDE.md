@@ -6,25 +6,25 @@
 
 ## Project Overview
 
-**Auto-Damper** is a standalone ESP32-based servo diverter for diesel camping heaters with BLE. It routes the heater's hot air output between inside a tent and outside, based on duct temperature. The goal is to prevent temperature swings caused by the heater's built-in auto mode cycling.
+**Auto-Damper** is a non-invasive BLE accessory for CC (Chinese Clone) diesel camping heaters. It communicates with heaters via BLE using protocols reverse-engineered from Dcloud apps, replacing spyware-laden CCP data collection apps with local-only control. It also routes the heater's hot air output between inside a tent and outside via a servo-driven diverter, based on duct temperature.
 
-**Problem:** Well-insulated camping tent + heater auto mode = temperature swings from 17°C to 30°C. During startup/cooldown cycles, the heater blows undesirable air (cold/lukewarm) into the tent, then overshoots when running.
+**Problem:** Well-insulated camping tent + heater auto mode = temperature swings from 17°C to 30°C. During startup/cooldown cycles, the heater blows undesirable air (cold/lukewarm) into the tent, then overshoots when running. The stock Dcloud BLE apps are spyware.
 
-**Solution:** A two-way diverter (pre-made damper rated for operating temps, with 3D-printed servo mount adapter and output coupler) routes heater output:
+**Solution:** A two-way diverter routes heater output:
 - **INSIDE** when duct temperature is high (heater producing useful heat)
 - **OUTSIDE** during startup/cooldown (undesirable air vented out)
 
-The tent's insulation holds temperature while the heater does its maintenance cycles with air routed outside.
+Plus full BLE heater control (power, temp, mode) and REST API — all local, no cloud.
 
 **Hardware:**
-- **Board:** ESP32-S (original ESP32-WROOM-32 DevKitC)
-- **Temperature Sensor:** MAX6675 K-type thermocouple at duct inlet (SPI)
+- **Board:** Raspberry Pi Pico 2W (RP2350A + CYW43439 WiFi/BT)
+- **Temperature Sensor:** MAX6675 K-type thermocouple at duct inlet (SPI0)
 - **Actuator:** 270° servo (PWM, 500-2500µs pulse width)
-- **Future:** BLE connection to heater for state awareness, web interface
+- **Connectivity:** WiFi (HTTP REST API, mDNS) + BLE central (heater control)
 
 **License:** Apache-2.0
 
-**Status:** Core firmware complete and verified on hardware. Temperature sensing, servo control, state machine, shell commands, and override mode all working. Next: BLE heater integration.
+**Status:** Ported from ESP32 to Pico 2W. BLE heater protocols (BYD + CC), WiFi, HTTP REST API, NVS config persistence, shell commands all implemented. Building and ready for hardware testing.
 
 ---
 
@@ -36,6 +36,8 @@ The tent's insulation holds temperature while the heater does its maintenance cy
 2. **State Machine:** Zephyr SMF for damper routing decisions
 3. **Zbus Listeners:** Callback-based observers (matching Helios pattern, not message subscribers)
 4. **Shell Commands:** Runtime configuration via Zephyr shell over serial console
+5. **Protocol Vtable:** `struct heater_protocol` with match/decode/encode methods for multi-protocol BLE support
+6. **HTTP REST API:** JSON endpoints for remote control via WiFi
 
 ### Zbus Channels
 
@@ -44,6 +46,7 @@ The tent's insulation holds temperature while the heater does its maintenance cy
 | `temperature_data_chan` | `struct temperature_data` | Thermocouple readings (published every 500ms) |
 | `damper_command_chan` | `struct damper_command` | Configuration and override commands |
 | `damper_data_chan` | `struct damper_data` | Current damper state/route (published on changes) |
+| `heater_data_chan` | `struct heater_data` | BLE heater telemetry (published on notify) |
 
 ### Threading Model
 
@@ -51,6 +54,7 @@ The tent's insulation holds temperature while the heater does its maintenance cy
 |--------|-------------|---------|------|----------|
 | `temperature_thread_id` | `temperature_thread()` | MAX6675 SPI reads | 500ms | 5 |
 | `damper_thread_id` | `damper_thread()` | State machine loop | 250ms | 4 |
+| `wifi_thread` | `wifi_thread()` | WiFi connect/reconnect | 1s | 7 |
 
 ### State Machine
 
@@ -62,7 +66,7 @@ The tent's insulation holds temperature while the heater does its maintenance cy
 
 **Hysteresis:** Transitions use two thresholds (default 80°C high, 70°C low) to prevent flapping near the boundary.
 
-**Override Mode:** Shell commands can force inside/outside regardless of temperature. Returns to auto mode with `damper override auto`.
+**Override Mode:** Shell commands or REST API can force inside/outside regardless of temperature. Returns to auto mode with `damper override auto`.
 
 ---
 
@@ -79,6 +83,14 @@ damper set servo_outside 225     # Servo degrees for outside routing
 damper override inside           # Manual override: force inside
 damper override outside          # Manual override: force outside
 damper override auto             # Return to automatic mode
+damper ble scan [timeout]        # Scan for BLE heaters
+damper ble stop                  # Stop scanning, show results
+damper ble connect <index>       # Connect to scanned heater
+damper ble disconnect            # Disconnect from heater
+damper ble protocol <byd|cc|auto> # Force protocol or auto-detect
+damper ble status                # Show heater telemetry
+damper wifi save <ssid> <pw>     # Save WiFi credentials and connect
+damper wifi status               # Show WiFi/IP status
 ```
 
 ### Config Defaults
@@ -97,27 +109,33 @@ servo_max_deg = 270.0    // degrees — servo total range
 
 ## Hardware Connections
 
-### ESP32 DevKitC Pin Assignments
+### Pico 2W Pin Assignments
 
-| Silkscreen | GPIO | Function | Bus | Wire | Notes |
-|------------|------|----------|-----|------|-------|
-| D12 | GPIO12 | MAX6675 SO (MISO) | SPI2 | Yellow | Bootstrap pin — safe (high-Z when CS high) |
-| D13 | GPIO13 | SPI2 MOSI | SPI2 | — | Not used (MAX6675 is read-only) |
-| D14 | GPIO14 | MAX6675 SCK (SCLK) | SPI2 | Blue | |
-| D15 | GPIO15 | MAX6675 CS | SPI2 | Orange | |
-| D27 | GPIO27 | Servo PWM | LEDC CH0 | White | 50Hz, 500–2500µs pulse |
+| GPIO | Function | Bus | Notes |
+|------|----------|-----|-------|
+| GP0 | UART0 TX | UART | Console/shell |
+| GP1 | UART0 RX | UART | Console/shell |
+| GP2 | Servo PWM | PWM 1A | 50Hz, 500–2500µs pulse |
+| GP16 | MAX6675 SO (MISO) | SPI0 | |
+| GP17 | MAX6675 CS | GPIO | Software chip select |
+| GP18 | MAX6675 SCK | SPI0 | |
+| GP19 | SPI0 TX (MOSI) | SPI0 | Not connected (MAX6675 is read-only) |
+| GP23 | CYW43439 WL_REG_ON | — | WiFi/BT module power |
+| GP24 | CYW43439 SPI DATA/IRQ | PIO0 | Shared bus select + host wake |
+| GP25 | CYW43439 SPI CS | PIO0 | WiFi/BT chip select |
+| GP29 | CYW43439 SPI CLK | PIO0 | WiFi/BT clock |
 
 ### Power
 
-| Rail | Source | Wire | Consumers |
-|------|--------|------|-----------|
-| 3V3 | ESP32 DevKitC regulator | — | MAX6675 VCC |
-| 5V (VIN) | USB or external | Red | Servo VCC |
-| GND | Common | Black | Servo, MAX6675 |
+| Rail | Source | Consumers |
+|------|--------|-----------|
+| 3V3 | Pico 2W regulator | MAX6675 VCC, CYW43439 |
+| VSYS (5V) | USB or external | Servo VCC |
+| GND | Common | Servo, MAX6675 |
 
 ### USB Serial
 
-- **Device:** `/dev/ttyUSB0` (CP210x UART Bridge)
+- **Device:** `/dev/ttyACM0` (USB CDC)
 - **Baud Rate:** 115200
 
 ---
@@ -130,40 +148,28 @@ servo_max_deg = 270.0    // degrees — servo total range
 # From apps/auto-damper/ directory, with venv activated:
 source ../../.venv/bin/activate
 export ZEPHYR_BASE="../../zephyr"
-export ZEPHYR_SDK_INSTALL_DIR="../../tools/zephyr-sdk"
+export ZEPHYR_SDK_INSTALL_DIR="../../tools/zephyr-sdk-1.0.1"
 
-west build -b esp32_devkitc/esp32/procpu           # Build
-west build -b esp32_devkitc/esp32/procpu -p always  # Clean rebuild
-west flash --esp-device /dev/ttyUSB0                # Flash (USER ONLY)
+west build -b rpi_pico2/rp2350a/m33/w              # Build
+west build -b rpi_pico2/rp2350a/m33/w -p always     # Clean rebuild
 ```
-
-Or via Taskfile:
-```bash
-task build-firmware
-task rebuild-firmware
-task flash-firmware     # USER ONLY — never auto-flash
-task serial-terminal    # Opens minicom
-```
-
-### Build Status
-
-**Current:** Compiles, links, flashed, and verified on hardware.
-- Flash: ~195KB / 4MB (4.66%)
-- DRAM: ~25KB / 192KB (12.63%)
-
-### Hardware Verification Status
-
-All core features verified on physical ESP32 DevKitC:
-- **MAX6675 thermocouple:** Reading accurately (~23°C at room temp)
-- **Servo control:** 270° servo responds to PWM commands (0° and 270° positions confirmed)
-- **Override commands:** `damper override inside/outside/auto` all move servo correctly
-- **State machine:** AUTO mode routes based on temperature thresholds
-- **Shell interface:** All commands functional over serial (115200 baud, /dev/ttyUSB0)
 
 ### Flashing
 
-User has granted permission to flash this ESP32 — no safety-critical hardware is connected.
-Use pyserial from `../../.venv/bin/python3` for serial communication from scripts.
+Drag-and-drop `build/zephyr/zephyr.uf2` via Pico 2W's USB bootloader (hold BOOTSEL while plugging in).
+
+User has granted permission to flash — no safety-critical hardware is connected.
+
+### Build Status
+
+**Current:** Compiles and links for Pico 2W.
+- Flash: 668KB / 4MB (15.94%)
+- RAM: 188KB / 520KB (35.39%)
+- UF2 output: 1.3MB
+
+### Prerequisites
+
+The Zephyr repo must be on branch `feat/bt-hci-cyw43-shared-bus` (contains the CYW43439 BT HCI shared-bus driver). Infineon blobs must be fetched: `west blobs fetch hal_infineon`.
 
 ---
 
@@ -174,71 +180,63 @@ auto-damper/
 ├── CLAUDE.md                    # This file
 ├── CMakeLists.txt              # Build configuration
 ├── prj.conf                    # Zephyr Kconfig
-├── app.overlay                 # Device tree (LEDC PWM, SPI, servo, MAX6675)
+├── app.overlay                 # Device tree (RP2350 PWM, SPI0, MAX6675, storage partition)
+├── sections-rom.ld             # Linker section for HTTP resources
 ├── Taskfile.dist.yml           # Task runner commands
 ├── dts/
 │   └── bindings/
 │       └── pwm-servo.yaml      # Servo DT binding (from Zephyr sample)
 ├── docs/
-│   └── byd-ble-protocol.md     # Reverse-engineered BLE protocol (from APK decompile)
-├── tmp/                         # Working files (APK, decompiled source — not committed)
-├── boards/                     # (empty — board overlays not needed currently)
+│   ├── byd-ble-protocol.md     # Reverse-engineered BYD BLE protocol
+│   └── rest-api.md             # REST API design doc
+├── web/
+│   └── index.html              # Web UI (gzip-compressed into firmware)
 ├── include/auto_damper/
 │   ├── damper.h                # Config struct, state enum, API
-│   └── zbus.h                  # Zbus message types and channel declarations
+│   ├── zbus.h                  # Zbus message types and channel declarations
+│   ├── config.h                # NVS storage API
+│   ├── heater.h                # Heater protocol vtable and data types
+│   ├── wifi.h                  # WiFi public API
+│   └── wifi_config.h           # WiFi credentials NVS API
 └── src/
-    ├── main.c                  # Thread defs, zbus channels, servo/temp hardware
+    ├── main.c                  # Thread defs, servo/temp hardware
     ├── damper.c                # State machine, listeners, command handler
-    └── shell.c                 # Shell commands for runtime config
+    ├── shell.c                 # Shell commands for runtime config
+    ├── heater_ble.c            # BLE central: scan, connect, GATT, heartbeat
+    ├── heater_byd.c            # BYD protocol: decode/encode (0xFFE0/0xFFE1)
+    ├── heater_cc.c             # CC protocol: decode/encode (0xFFF0/0xFFF2)
+    ├── http_api.c              # REST API endpoints (status, config, BLE, override)
+    ├── config/
+    │   ├── nvs_storage.c       # NVS flash storage backend
+    │   └── wifi_config.c       # WiFi credentials persistence
+    └── network/
+        └── wifi.c              # WiFi thread, connect/reconnect, hostname
 ```
 
 ---
 
-## Planned Features (In Order)
+## BLE Heater Integration
 
-1. **BLE connection to heater** — **IN PROGRESS** — Protocol reverse-engineered from APK (see `docs/byd-ble-protocol.md`). Next: implement ESP32 BLE central to connect, authenticate, and receive telemetry.
-2. **Web interface** — User has a preferred web stack (TBD)
-3. **NVS persistence** — Save config to flash so settings survive reboot
+### Supported Protocols
 
----
+| Protocol | Manufacturer | Device Prefix | Service UUID | Characteristics | Auth |
+|----------|-------------|---------------|-------------|-----------------|------|
+| BYD | Booyood/Baiyide | `BYD-XXXX` | `0xFFE0` | `0xFFE1` (write+notify) | Passkey in packet |
+| CC | Generic Chinese Clone | `CC-XXXX` | `0xFFF0` | `0xFFF2` (write), auto-notify | None |
 
-## Key Decisions
+### Protocol Vtable
 
-- **Zephyr RTOS over Arduino/PlatformIO:** Consistency with rest of Thermoquad ecosystem, user already knows Zephyr
-- **Zbus listener callbacks over message subscribers:** Matches Helios pattern, simpler for this use case
-- **SMF state machine:** Consistent with Helios, extensible if states are added later
-- **LEDC for servo PWM:** ESP32's LEDC peripheral is the standard PWM path in Zephyr
-- **MAX6675 native driver:** Zephyr has a built-in driver with sample code
-- **Android-first BLE discovery:** Use nRF Connect / APK decompile before writing ESP32 BLE code — know the protocol first, then implement
+New heater protocols are added by implementing `struct heater_protocol` (see `include/auto_damper/heater.h`):
+- `match()` — identify device by BLE advertised name
+- `decode()` — parse telemetry notifications
+- `encode_ping/power/set_temp/set_mode()` — build command packets
 
----
+### BLE Architecture
 
-## BLE Integration
-
-### Protocol (Reverse-Engineered)
-
-Full protocol documented in `docs/byd-ble-protocol.md`. Key facts:
-
-- **Manufacturer:** Booyood/Baiyide (BYD), app: `airHeaterByBLE.apk`
-- **Device name prefix:** `BYD-XXXX`
-- **Service:** `0000FFE0` / **Characteristic:** `0000FFE1` (write + notify)
-- **Commands:** 8 bytes — `[AA 55] [passkey/100] [passkey%100] [cmd] [data_lo] [data_hi] [checksum]`
-- **Default passkey:** `1234`
-- **Telemetry:** V1 (18 bytes plaintext) or V2 (40+ bytes, XOR'd with `"password"`)
-- **Available data:** heater on/off state, run step (idle/preheat/heating/cooling), exhaust temp, ambient temp, voltage, error codes, gear level, target temp
-- **No BLE pairing** — passkey is embedded in every command packet
-
-### ESP32 BLE Implementation (Next Phase)
-
-Once the protocol is known:
-
-- **Role:** BLE central — scan, connect, discover services, read/subscribe to characteristics
-- **BLE version:** ESP32-S supports BLE 4.2 (no BLE 5 extended features — hardware limitation of original ESP32)
-- **Zephyr BLE stack:** Requires `CONFIG_BT=y`, `CONFIG_BT_CENTRAL=y`, `CONFIG_BT_GATT_CLIENT=y`
-- **Binary blob:** Must fetch ESP32 BT blob first: `west blobs fetch hal_espressif`
-- **Heap:** ESP32 BT driver reserves ~25.6KB heap; may need `CONFIG_HEAP_MEM_POOL_SIZE=65536`
-- **Key constraint:** Must call `bt_le_scan_stop()` before `bt_conn_le_create()` — cannot scan and connect simultaneously
-- **Listener callbacks:** Use `zbus_chan_const_msg()` pattern (NOT `zbus_chan_read()`) — same fix that resolved the override bug
+- **Auto-detect:** Scan results are matched against registered protocols
+- **GATT discovery:** Finds service → discovers characteristics → subscribes to notify
+- **Heartbeat:** Periodic ping keeps connection alive (protocol-specific interval)
+- **Telemetry:** Decoded notifications published to `heater_data_chan` via zbus
 
 ### Known Bugs Fixed
 
@@ -246,4 +244,36 @@ Once the protocol is known:
 
 ---
 
-**Last Updated:** 2026-05-01
+## REST API
+
+See `docs/rest-api.md` for full specification. Key endpoints:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/status` | Damper state, temperature, config |
+| POST | `/api/config` | Set damper parameters |
+| POST | `/api/override` | Override damper mode |
+| GET | `/api/ble/status` | BLE connection + heater telemetry |
+| POST | `/api/ble/scan` | Start BLE scan |
+| GET | `/api/ble/devices` | List scan results |
+| POST | `/api/ble/connect` | Connect to heater |
+| POST | `/api/ble/disconnect` | Disconnect |
+| POST | `/api/ble/power` | Heater on/off |
+| POST | `/api/ble/temp` | Set target temperature |
+| POST | `/api/ble/mode` | Set run mode (manual/automatic/fan) |
+| POST | `/api/ble/power-level` | Set power level (1-10) |
+
+---
+
+## Key Decisions
+
+- **Pico 2W over ESP32:** RP2350 has 520KB flat SRAM (vs ESP32's 233KB usable DRAM), 4MB flash with room for BT+WiFi+web UI+OTA, consistent with Thermoquad RP2350 ecosystem, RM2 module avoids FCC certs, Python-friendly for hackers
+- **Zephyr RTOS:** Consistency with rest of Thermoquad ecosystem
+- **Zbus listener callbacks over message subscribers:** Matches Helios pattern, simpler for this use case
+- **SMF state machine:** Consistent with Helios, extensible if states are added later
+- **Protocol vtable pattern:** Extensible multi-protocol BLE support without modifying core BLE code
+- **CYW43439 shared-bus BT HCI:** Custom Zephyr driver (branch `feat/bt-hci-cyw43-shared-bus`) enables BT on Pico 2W — previously unsupported in Zephyr mainline
+
+---
+
+**Last Updated:** 2026-05-07
