@@ -195,6 +195,21 @@ it.
 Option 2 is the most realistic path. The firmware is MIT-licensed in the
 cyw43-driver repo and is the de facto standard for this hardware.
 
+### Precedent: beechwoods-software/zephyr-cyw43-driver
+
+[beechwoods-software/zephyr-cyw43-driver](https://github.com/beechwoods-software/zephyr-cyw43-driver)
+proved this approach works for **WiFi**: instead of the Infineon-provided WiFi
+blobs, they wrapped the [georgerobotics/cyw43-driver](https://github.com/georgerobotics/cyw43-driver)
+(the same driver and firmware that ships in the Pico SDK) as a Zephyr
+out-of-tree module. Their work eventually led to Infineon providing an official
+WiFi driver to Zephyr mainline.
+
+The BT side never got the same treatment — the Infineon BT blob in
+`hal_infineon` is still the incomplete one that doesn't boot on Pico W/2W. The
+same pattern applies: take `cyw43_btfw_43439.h` from the georgerobotics
+cyw43-driver firmware directory and register it as a proper blob in
+`hal_infineon` (or a dedicated module) with correct hashing.
+
 ## Known Issues
 
 ### WiFi Breaks After BT Init
