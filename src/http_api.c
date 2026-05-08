@@ -32,6 +32,7 @@ extern bool heater_ble_is_scanning(void);
 extern int heater_ble_get_scan_count(void);
 extern int heater_ble_send_power(bool on);
 extern int heater_ble_send_set_temp(int temp_c);
+extern int heater_ble_send_set_mode(enum heater_run_mode mode);
 
 struct ble_scan_result {
   bt_addr_le_t addr;
@@ -327,11 +328,12 @@ static int handle_api_ble_status(struct http_client_ctx *client,
         "\"telemetry\":{"
           "\"power\":\"%s\","
           "\"step\":\"%s\","
+          "\"mode\":\"%s\","
           "\"exhaust_temp\":%.1f,"
           "\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,"
           "\"target_temp\":%d,"
-          "\"gear\":%d,"
+          "\"power_level\":%d,"
           "\"error\":%d"
         "}"
         "}",
@@ -339,9 +341,10 @@ static int handle_api_ble_status(struct http_client_ctx *client,
         heater_ble_is_scanning() ? "true" : "false",
         heater_power_state_str(hdata.power),
         heater_run_step_str(hdata.step),
+        heater_run_mode_str(hdata.mode),
         hdata.exhaust_temp_c, hdata.ambient_temp_c,
         hdata.voltage, hdata.target_temp,
-        hdata.gear_level, hdata.error_code);
+        hdata.power_level, hdata.error_code);
   } else {
     len = snprintf(ble_status_buf, sizeof(ble_status_buf),
         "{"
@@ -635,68 +638,263 @@ HTTP_RESOURCE_DEFINE(api_ble_protocol_res, damper_http_service,
                      "/api/ble/protocol", &api_ble_protocol_detail);
 
 //////////////////////////////////////////////////////////////
-// Static Web Resources
+// POST /api/ble/power
 //////////////////////////////////////////////////////////////
 
-#if HAS_INDEX_HTML
-static uint8_t index_html_gz[] = {
-#include "index.html.gz.inc"
-};
+static char power_body[BODY_BUF_SIZE];
+static char power_resp[128];
 
-static struct http_resource_detail_static index_resource = {
+static int handle_api_ble_power(struct http_client_ctx *client,
+                                enum http_data_status status,
+                                const struct http_request_ctx *req,
+                                struct http_response_ctx *rsp,
+                                void *user_data)
+{
+  if (status != HTTP_SERVER_DATA_FINAL) {
+    return 0;
+  }
+
+  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
+    return send_json_error(rsp, power_resp, 400, "invalid body");
+  }
+
+  memcpy(power_body, req->data, req->data_len);
+  power_body[req->data_len] = '\0';
+
+  bool on;
+
+  if (strstr(power_body, "\"on\"") || strstr(power_body, "true")) {
+    on = true;
+  } else if (strstr(power_body, "\"off\"") || strstr(power_body, "false")) {
+    on = false;
+  } else {
+    return send_json_error(rsp, power_resp, 400,
+                           "need on/off or true/false");
+  }
+
+  int err = heater_ble_send_power(on);
+  if (err == -ENOTCONN) {
+    return send_json_error(rsp, power_resp, 400, "not connected");
+  } else if (err == -ENOTSUP) {
+    return send_json_error(rsp, power_resp, 400, "not supported");
+  } else if (err) {
+    return send_json_error(rsp, power_resp, 500, "send failed");
+  }
+
+  int len = snprintf(power_resp, sizeof(power_resp),
+                     "{\"ok\":true,\"power\":\"%s\"}", on ? "on" : "off");
+  return send_json(rsp, power_resp, len);
+}
+
+static struct http_resource_detail_dynamic api_ble_power_detail = {
     .common = {
-        .type = HTTP_RESOURCE_TYPE_STATIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_GET),
-        .content_encoding = "gzip",
-        .content_type = "text/html",
+        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
+        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
+        .content_type = "application/json",
     },
-    .static_data = index_html_gz,
-    .static_data_len = sizeof(index_html_gz),
+    .cb = handle_api_ble_power,
 };
 
-HTTP_RESOURCE_DEFINE(index_res, damper_http_service, "/",
-                     &index_resource);
-#endif
+HTTP_RESOURCE_DEFINE(api_ble_power_res, damper_http_service,
+                     "/api/ble/power", &api_ble_power_detail);
 
-#if HAS_APP_JS
-static uint8_t app_js_gz[] = {
-#include "app.js.gz.inc"
-};
+//////////////////////////////////////////////////////////////
+// POST /api/ble/temp
+//////////////////////////////////////////////////////////////
 
-static struct http_resource_detail_static app_js_resource = {
+static char temp_body[BODY_BUF_SIZE];
+static char temp_resp[128];
+
+static int handle_api_ble_temp(struct http_client_ctx *client,
+                               enum http_data_status status,
+                               const struct http_request_ctx *req,
+                               struct http_response_ctx *rsp,
+                               void *user_data)
+{
+  if (status != HTTP_SERVER_DATA_FINAL) {
+    return 0;
+  }
+
+  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
+    return send_json_error(rsp, temp_resp, 400, "invalid body");
+  }
+
+  memcpy(temp_body, req->data, req->data_len);
+  temp_body[req->data_len] = '\0';
+
+  char *v = strstr(temp_body, "\"temp\"");
+  if (!v) {
+    return send_json_error(rsp, temp_resp, 400, "need temp field");
+  }
+
+  char *colon = strchr(v + 6, ':');
+  if (!colon) {
+    return send_json_error(rsp, temp_resp, 400, "invalid format");
+  }
+
+  int temp_c = atoi(colon + 1);
+  if (temp_c < 8 || temp_c > 36) {
+    return send_json_error(rsp, temp_resp, 400,
+                           "temp must be 8-36");
+  }
+
+  int err = heater_ble_send_set_temp(temp_c);
+  if (err == -ENOTCONN) {
+    return send_json_error(rsp, temp_resp, 400, "not connected");
+  } else if (err == -ENOTSUP) {
+    return send_json_error(rsp, temp_resp, 400, "not supported");
+  } else if (err) {
+    return send_json_error(rsp, temp_resp, 500, "send failed");
+  }
+
+  int len = snprintf(temp_resp, sizeof(temp_resp),
+                     "{\"ok\":true,\"temp\":%d}", temp_c);
+  return send_json(rsp, temp_resp, len);
+}
+
+static struct http_resource_detail_dynamic api_ble_temp_detail = {
     .common = {
-        .type = HTTP_RESOURCE_TYPE_STATIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_GET),
-        .content_encoding = "gzip",
-        .content_type = "application/javascript",
+        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
+        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
+        .content_type = "application/json",
     },
-    .static_data = app_js_gz,
-    .static_data_len = sizeof(app_js_gz),
+    .cb = handle_api_ble_temp,
 };
 
-HTTP_RESOURCE_DEFINE(app_js_res, damper_http_service, "/app.js",
-                     &app_js_resource);
-#endif
+HTTP_RESOURCE_DEFINE(api_ble_temp_res, damper_http_service,
+                     "/api/ble/temp", &api_ble_temp_detail);
 
-#if HAS_APP_CSS
-static uint8_t app_css_gz[] = {
-#include "app.css.gz.inc"
-};
+//////////////////////////////////////////////////////////////
+// POST /api/ble/gear
+//////////////////////////////////////////////////////////////
 
-static struct http_resource_detail_static app_css_resource = {
+static char plevel_body[BODY_BUF_SIZE];
+static char plevel_resp[128];
+
+static int handle_api_ble_power_level(struct http_client_ctx *client,
+                                      enum http_data_status status,
+                                      const struct http_request_ctx *req,
+                                      struct http_response_ctx *rsp,
+                                      void *user_data)
+{
+  if (status != HTTP_SERVER_DATA_FINAL) {
+    return 0;
+  }
+
+  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
+    return send_json_error(rsp, plevel_resp, 400, "invalid body");
+  }
+
+  memcpy(plevel_body, req->data, req->data_len);
+  plevel_body[req->data_len] = '\0';
+
+  char *v = strstr(plevel_body, "\"level\"");
+  if (!v) {
+    return send_json_error(rsp, plevel_resp, 400, "need level field");
+  }
+
+  char *colon = strchr(v + 7, ':');
+  if (!colon) {
+    return send_json_error(rsp, plevel_resp, 400, "invalid format");
+  }
+
+  int level = atoi(colon + 1);
+  if (level < 1 || level > 10) {
+    return send_json_error(rsp, plevel_resp, 400,
+                           "level must be 1-10");
+  }
+
+  int err = heater_ble_send_set_temp(level);
+  if (err == -ENOTCONN) {
+    return send_json_error(rsp, plevel_resp, 400, "not connected");
+  } else if (err) {
+    return send_json_error(rsp, plevel_resp, 500, "send failed");
+  }
+
+  int len = snprintf(plevel_resp, sizeof(plevel_resp),
+                     "{\"ok\":true,\"level\":%d}", level);
+  return send_json(rsp, plevel_resp, len);
+}
+
+static struct http_resource_detail_dynamic api_ble_power_level_detail = {
     .common = {
-        .type = HTTP_RESOURCE_TYPE_STATIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_GET),
-        .content_encoding = "gzip",
-        .content_type = "text/css",
+        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
+        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
+        .content_type = "application/json",
     },
-    .static_data = app_css_gz,
-    .static_data_len = sizeof(app_css_gz),
+    .cb = handle_api_ble_power_level,
 };
 
-HTTP_RESOURCE_DEFINE(app_css_res, damper_http_service, "/app.css",
-                     &app_css_resource);
-#endif
+HTTP_RESOURCE_DEFINE(api_ble_power_level_res, damper_http_service,
+                     "/api/ble/power-level",
+                     &api_ble_power_level_detail);
+
+//////////////////////////////////////////////////////////////
+// POST /api/ble/mode
+//////////////////////////////////////////////////////////////
+
+static char mode_body[BODY_BUF_SIZE];
+static char mode_resp[128];
+
+static int handle_api_ble_mode(struct http_client_ctx *client,
+                               enum http_data_status status,
+                               const struct http_request_ctx *req,
+                               struct http_response_ctx *rsp,
+                               void *user_data)
+{
+  if (status != HTTP_SERVER_DATA_FINAL) {
+    return 0;
+  }
+
+  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
+    return send_json_error(rsp, mode_resp, 400, "invalid body");
+  }
+
+  memcpy(mode_body, req->data, req->data_len);
+  mode_body[req->data_len] = '\0';
+
+  enum heater_run_mode mode;
+  const char *mode_str;
+
+  if (strstr(mode_body, "\"manual\"")) {
+    mode = HEATER_MODE_MANUAL;
+    mode_str = "manual";
+  } else if (strstr(mode_body, "\"automatic\"")) {
+    mode = HEATER_MODE_AUTOMATIC;
+    mode_str = "automatic";
+  } else if (strstr(mode_body, "\"fan\"")) {
+    mode = HEATER_MODE_FAN;
+    mode_str = "fan";
+  } else {
+    return send_json_error(rsp, mode_resp, 400,
+                           "mode must be manual, automatic, or fan");
+  }
+
+  int err = heater_ble_send_set_mode(mode);
+  if (err == -ENOTCONN) {
+    return send_json_error(rsp, mode_resp, 400, "not connected");
+  } else if (err == -ENOTSUP) {
+    return send_json_error(rsp, mode_resp, 400, "not supported");
+  } else if (err) {
+    return send_json_error(rsp, mode_resp, 500, "send failed");
+  }
+
+  int len = snprintf(mode_resp, sizeof(mode_resp),
+                     "{\"ok\":true,\"mode\":\"%s\"}", mode_str);
+  return send_json(rsp, mode_resp, len);
+}
+
+static struct http_resource_detail_dynamic api_ble_mode_detail = {
+    .common = {
+        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
+        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
+        .content_type = "application/json",
+    },
+    .cb = handle_api_ble_mode,
+};
+
+HTTP_RESOURCE_DEFINE(api_ble_mode_res, damper_http_service,
+                     "/api/ble/mode", &api_ble_mode_detail);
 
 //////////////////////////////////////////////////////////////
 // Server Lifecycle

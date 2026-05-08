@@ -110,20 +110,33 @@ static int byd_decode(const uint8_t *buf, size_t len, struct heater_data *data)
   decode_power(tmp[3], data);
   decode_step(tmp[5], data);
 
+  if (tmp[3] != 0) {
+    uint8_t run_mode = tmp[8];
+    if (run_mode >= 1 && run_mode <= 3) {
+      data->mode = (enum heater_run_mode)run_mode;
+    }
+
+    if (run_mode == 1) {
+      data->power_level = tmp[9];
+    } else {
+      data->target_temp = tmp[9];
+      data->power_level = tmp[10] + 1;
+    }
+  } else {
+    data->target_temp = tmp[9];
+    data->power_level = tmp[10];
+  }
+
   if (!v2) {
     data->voltage = (double)((tmp[12] << 8) | tmp[11]) / 10.0;
     data->exhaust_temp_c = (double)(int16_t)((tmp[14] << 8) | tmp[13]);
     data->ambient_temp_c = (double)(int16_t)((tmp[16] << 8) | tmp[15]);
     data->error_code = (tmp[1] == 0x66) ? tmp[17] : tmp[4];
-    data->target_temp = tmp[9];
-    data->gear_level = tmp[10];
   } else if (len >= 36) {
     data->voltage = (double)((tmp[11] << 8) | tmp[12]) / 10.0;
     data->exhaust_temp_c = (double)(int16_t)((tmp[13] << 8) | tmp[14]);
     data->ambient_temp_c = (double)(int16_t)((tmp[32] << 8) | tmp[33]) / 10.0;
     data->error_code = (tmp[1] == 0x66) ? tmp[35] : tmp[4];
-    data->target_temp = tmp[9];
-    data->gear_level = tmp[10];
   }
 
   data->connected = true;
@@ -174,6 +187,16 @@ static int byd_encode_set_temp(uint8_t *buf, size_t len, int temp_c)
   return 8;
 }
 
+static int byd_encode_set_mode(uint8_t *buf, size_t len,
+                               enum heater_run_mode mode)
+{
+  if (len < 8) {
+    return -ENOMEM;
+  }
+  byd_frame(buf, 0x02, (uint8_t)mode, 0x00);
+  return 8;
+}
+
 //////////////////////////////////////////////////////////////
 // Protocol Definition
 //////////////////////////////////////////////////////////////
@@ -189,4 +212,5 @@ const struct heater_protocol heater_protocol_byd = {
     .encode_ping = byd_encode_ping,
     .encode_power = byd_encode_power,
     .encode_set_temp = byd_encode_set_temp,
+    .encode_set_mode = byd_encode_set_mode,
 };

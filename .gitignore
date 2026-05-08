@@ -17,3 +17,4 @@ twister-out/
 # OS
 .DS_Store
 Thumbs.db
+.mcp.json

@@ -46,7 +46,7 @@ Byte 7: checksum        (byte2 + byte3 + byte4 + byte5 + byte6) & 0xFF
 | CMD | Data | Description |
 |-----|------|-------------|
 | 1 | 0 | Ping / status request |
-| 2 | 1-6 | Set run mode: 1=Gear, 2=Thermo, 3=Fan, 4=Plus, 5=One, 6=Temp |
+| 2 | 1-6 | Set run mode: 1=Manual, 2=Automatic, 3=Fan, 4=Plus, 5=One, 6=Temp (**requires onOff=2/RUNNING**) |
 | 3 | 0/1 | Power OFF (0) / ON (1) |
 | 4 | value | Set target temp (°C, range 8-36) or gear level (1-10) per mode |
 | 10 | minutes | Sync clock (hours*60 + minutes since midnight) |
@@ -98,9 +98,9 @@ Byte  3:    onOff          (0=off, 1=starting, 2=running, 3=shutting down)
 Byte  4:    errcode        (50=no error, when byte1=0x55)
 Byte  5:    runStep        (0=idle, 1=self-check, 2=preheat, 3=heating, 4=cooling)
 Bytes 6-7:  altitude       (byte6 + byte7*256) / 10 meters [little-endian]
-Byte  8:    runM           (mode: 1=gear, 2=temp, 3=auto)
-Byte  9:    runG/runT      (gear or target temp per mode)
-Byte 10:    runG+1         (gear level + 1)
+Byte  8:    runM           (mode: 1=manual, 2=automatic, 3=fan)
+Byte  9:    (mode-dependent: power-level in manual, target temp otherwise)
+Byte 10:    (mode-dependent: N/A in manual, power-level+1 otherwise)
 Bytes 11-12: voltage       (byte12*256 + byte11) / 10 volts [little-endian]
 Bytes 13-14: exhaust temp  signed16(byte14*256 + byte13) °C [little-endian]
 Bytes 15-16: ambient temp  signed16(byte16*256 + byte15) °C [little-endian]
@@ -198,6 +198,36 @@ Byte 36:    brightness     (display backlight, 0=not supported)
 | Start OTA | Send `[0x84, 0x00, ...]` (20 bytes) |
 | End OTA | Send `[0x83, 0x00, ...]` (20 bytes) |
 | Device name in OTA mode | `BYDOTA-` prefix |
+
+---
+
+## Command Constraints
+
+### Mode Switching (CMD 2) Requires RUNNING State
+
+The app only sends CMD 2 (set run mode) when `onOff == 2` (RUNNING). If `onOff` is 0
+(off), 1 (starting), or 3 (shutting down), the app shows an "isOff" error and blocks the
+command. Source: `heat/index.vue:1697` in decompiled APK.
+
+**Correct fan mode activation sequence:**
+
+1. Send CMD 3 data=1 (power on)
+2. Poll telemetry until `onOff == 2` (byte 3 transitions: 0→1→2)
+3. Send CMD 2 data=3 (switch to fan mode)
+
+Sending the mode command during STARTING (onOff=1) will be ignored by the heater.
+
+### Mode-Dependent Telemetry (V1 bytes 8-10)
+
+Bytes 9-10 change meaning based on the current mode (byte 8), and mode is only valid when
+the heater is on (`onOff != 0`):
+
+| Mode (byte 8) | Byte 9 | Byte 10 |
+|---------------|--------|---------|
+| 1 (manual) | power level (1-10) | N/A |
+| 2 (automatic) | target temp (°C/°F) | power level + 1 |
+| 3 (fan) | target temp (°C/°F) | power level + 1 |
+| heater off | target temp | power level |
 
 ---
 

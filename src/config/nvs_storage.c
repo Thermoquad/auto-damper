@@ -152,7 +152,7 @@ int config_exists(uint16_t id)
   struct config_header header;
   int rc = nvs_read(&fs, id, &header, sizeof(header));
 
-  if (rc == sizeof(header)) {
+  if (rc > 0) {
     return 1;
   } else if (rc == -ENOENT) {
     return 0;

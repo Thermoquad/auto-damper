@@ -16,7 +16,7 @@ LOG_MODULE_REGISTER(wifi_config, LOG_LEVEL_INF);
 #define WIFI_CONFIG_VERSION   1
 #define WIFI_SETTINGS_VERSION 1
 #define WIFI_DEFAULT_AUTO_CONNECT true
-#define WIFI_DEFAULT_RECONNECT_INTERVAL 30
+#define WIFI_DEFAULT_RECONNECT_INTERVAL 5
 
 //////////////////////////////////////////////////////////////
 // Public API

@@ -574,6 +574,26 @@ int heater_ble_send_set_temp(int temp_c)
                                         pkt_len, false);
 }
 
+int heater_ble_send_set_mode(enum heater_run_mode mode)
+{
+  if (!heater_conn || !active_protocol || write_handle == 0) {
+    return -ENOTCONN;
+  }
+
+  if (!active_protocol->encode_set_mode) {
+    return -ENOTSUP;
+  }
+
+  uint8_t buf[16];
+  int pkt_len = active_protocol->encode_set_mode(buf, sizeof(buf), mode);
+
+  if (pkt_len < 0) {
+    return pkt_len;
+  }
+  return bt_gatt_write_without_response(heater_conn, write_handle, buf,
+                                        pkt_len, false);
+}
+
 const char *heater_power_state_str(enum heater_power_state s)
 {
   switch (s) {
@@ -594,5 +614,15 @@ const char *heater_run_step_str(enum heater_run_step s)
   case HEATER_STEP_HEATING: return "HEATING";
   case HEATER_STEP_COOLING: return "COOLING";
   default: return "UNKNOWN";
+  }
+}
+
+const char *heater_run_mode_str(enum heater_run_mode m)
+{
+  switch (m) {
+  case HEATER_MODE_MANUAL: return "manual";
+  case HEATER_MODE_AUTOMATIC: return "automatic";
+  case HEATER_MODE_FAN: return "fan";
+  default: return "unknown";
   }
 }

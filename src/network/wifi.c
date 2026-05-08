@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(wifi, LOG_LEVEL_INF);
 #define WIFI_THREAD_STACK_SIZE 2048
 #define WIFI_THREAD_PRIORITY 7
 #define WIFI_LOOP_SLEEP_MS 1000
+#define WIFI_RETRY_DELAY_MS 1000
 
 //////////////////////////////////////////////////////////////
 // State
@@ -83,6 +84,12 @@ static void wifi_event_handler(struct net_mgmt_event_callback *cb,
     if (status && status->conn_status == WIFI_STATUS_CONN_SUCCESS) {
       LOG_INF("WiFi connected to '%s'", wifi_state.ssid);
       wifi_state.connected = true;
+
+      char addr[16];
+      if (wifi_get_ip_address(addr, sizeof(addr)) == 0) {
+        LOG_INF("IP address: %s", addr);
+        http_api_start();
+      }
     } else {
       LOG_ERR("WiFi connection failed: %s",
               status ? wifi_conn_status_txt(status->conn_status)
@@ -116,10 +123,6 @@ static void net_addr_event_handler(struct net_mgmt_event_callback *cb,
 {
   ARG_UNUSED(cb);
   ARG_UNUSED(iface);
-
-  if (!wifi_state.connected) {
-    return;
-  }
 
   if (mgmt_event == NET_EVENT_IPV4_DHCP_BOUND ||
       mgmt_event == NET_EVENT_IPV4_ADDR_ADD) {
@@ -220,6 +223,13 @@ static int wifi_connect_internal(void)
   if (ret) {
     LOG_ERR("WiFi connect request failed: %d", ret);
     wifi_state.connecting = false;
+
+    uint64_t now = k_uptime_get();
+    uint64_t interval_ms = wifi_state.reconnect_interval * 1000ULL;
+    wifi_state.last_connect_attempt_time =
+        now - interval_ms + WIFI_RETRY_DELAY_MS;
+    LOG_INF("Will retry in %u ms", WIFI_RETRY_DELAY_MS);
+
     return ret;
   }
 

@@ -25,15 +25,22 @@ enum heater_run_step {
   HEATER_STEP_COOLING,
 };
 
+enum heater_run_mode {
+  HEATER_MODE_MANUAL = 1,
+  HEATER_MODE_AUTOMATIC = 2,
+  HEATER_MODE_FAN = 3,
+};
+
 struct heater_data {
   enum heater_power_state power;
   enum heater_run_step step;
+  enum heater_run_mode mode;
   double exhaust_temp_c;
   double ambient_temp_c;
   double voltage;
   int error_code;
   int target_temp;
-  int gear_level;
+  int power_level;
   bool connected;
   int64_t timestamp_us;
 };
@@ -57,6 +64,7 @@ struct heater_protocol {
   int (*encode_ping)(uint8_t *buf, size_t len);
   int (*encode_power)(uint8_t *buf, size_t len, bool on);
   int (*encode_set_temp)(uint8_t *buf, size_t len, int temp_c);
+  int (*encode_set_mode)(uint8_t *buf, size_t len, enum heater_run_mode mode);
 };
 
 //////////////////////////////////////////////////////////////
@@ -68,5 +76,6 @@ extern const struct heater_protocol heater_protocol_cc;
 
 const char *heater_power_state_str(enum heater_power_state s);
 const char *heater_run_step_str(enum heater_run_step s);
+const char *heater_run_mode_str(enum heater_run_mode m);
 
 #endif

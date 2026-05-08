@@ -300,8 +300,10 @@ static int cmd_ble_status(const struct shell *sh, size_t argc, char **argv)
   shell_print(sh, "  Exhaust:      %.1f C", hdata.exhaust_temp_c);
   shell_print(sh, "  Ambient:      %.1f C", hdata.ambient_temp_c);
   shell_print(sh, "  Voltage:      %.1f V", hdata.voltage);
+  shell_print(sh, "  Mode:         %s",
+              heater_run_mode_str(hdata.mode));
   shell_print(sh, "  Target temp:  %d C", hdata.target_temp);
-  shell_print(sh, "  Gear:         %d", hdata.gear_level);
+  shell_print(sh, "  Power level:  %d", hdata.power_level);
   shell_print(sh, "  Error:        %d", hdata.error_code);
   return 0;
 }
