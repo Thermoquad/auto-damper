@@ -3,9 +3,11 @@
 version: "3"
 
 env:
-  BOARD: esp32_devkitc/esp32/procpu
-  SERIAL_PORT: /dev/ttyUSB0
-  BAUD: 115200
+  FIRMWARE_IMG: build/zephyr/zephyr.hex
+  RP_CFG: ../../tools/installs/openocd/share/openocd/scripts/target/rp2350.cfg
+  BOARD: rpi_pico2/rp2350a/m33/w
+  PROBE_USB_ID: 2e8a:000c
+  OCD_CFG: cmsis-dap.cfg
 
 tasks:
   build-firmware:
@@ -17,10 +19,23 @@ tasks:
     cmd: west build -b $BOARD -p always
 
   flash-firmware:
-    desc: Flash firmware to ESP32
+    desc: Flash firmware to Pico 2W via debug probe
     deps:
       - task: build-firmware
-    cmd: west flash --esp-device $SERIAL_PORT
+      - task: setup-flash-config
+    preconditions:
+      - test -f $FIRMWARE_IMG
+    cmds:
+      - ../../bin/openocd -f $OCD_CFG -f $RP_CFG -c "program $FIRMWARE_IMG verify reset exit"
+
+  reset-pico:
+    desc: Reset the Pico 2W connected to the debug probe
+    deps:
+      - task: setup-flash-config
+    preconditions:
+      - test -f $OCD_CFG
+    cmds:
+      - ../../bin/openocd -f $OCD_CFG -f $RP_CFG -c "reset exit"
 
   menuconfig:
     desc: Start menuconfig
@@ -28,10 +43,10 @@ tasks:
       - west build -t menuconfig
       - task: build-firmware
 
-  serial-terminal:
-    desc: Open serial console
-    interactive: true
-    cmd: minicom --baudrate $BAUD --device $SERIAL_PORT
+  config-diff:
+    desc: Display Zephyr's Kconfig diff
+    ignore_error: true
+    cmd: diff --color build/zephyr/.config.old build/zephyr/.config
 
   auto-build:
     desc: Build automatically when files change
@@ -44,3 +59,42 @@ tasks:
       - app.overlay
       - CMakeLists.txt
     cmd: west build
+
+  auto-flash:
+    desc: Build and flash automatically when files change
+    watch: true
+    sources:
+      - src/**
+      - include/**
+      - boards/**
+      - prj.conf
+      - app.overlay
+      - CMakeLists.txt
+    cmds:
+      - west build
+      - ../../bin/openocd -f $OCD_CFG -f $RP_CFG -c "program $FIRMWARE_IMG verify reset exit"
+
+  setup-flash-config:
+    desc: Create an openocd config that will flash firmware via a specific Pico debug probe
+    interactive: true
+    env:
+      PROBE_COUNT:
+        sh: lsusb -d $PROBE_USB_ID -v | grep iSerial | awk '{print $3}' | wc -l
+      PROBE_SERIALS:
+        sh: lsusb -d $PROBE_USB_ID -v | grep iSerial | awk '{print $3}'
+    status:
+      - test -f cmsis-dap.cfg
+    cmds:
+      - "{{ if int .PROBE_COUNT | gt 1 }}gum confirm 'There is more than one Pico probe connected, do you know the serial number of the probe you want to configure?'{{ end }}"
+      - echo "adapter driver cmsis-dap" > $OCD_CFG
+      - echo -n "adapter serial " >> $OCD_CFG
+      - echo "$PROBE_SERIALS" | gum choose --select-if-one --header "Select the Pico probe you'd like to use with auto-damper:" >> $OCD_CFG
+      - echo "adapter speed 5000" >> $OCD_CFG
+
+  serial-terminal:
+    desc: Starts minicom
+    interactive: true
+    env:
+      SERIAL_PORT:
+        sh: ls -l /dev/ttyACM* | awk '{print $10}' | gum choose --header "Pick the serial port to connect to:"
+    cmd: minicom --baudrate 115200 --device $SERIAL_PORT
