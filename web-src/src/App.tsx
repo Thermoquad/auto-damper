@@ -4,7 +4,6 @@ import { createWs, type PositionsMsg, type TargetsMsg } from './ws';
 
 export default function App() {
   const { connected, temperature, damper, heater, heaters, positions, setPositions, targets, setTargets, lastResult, send, sendCmd } = createWs();
-  const [scanning, setScanning] = createSignal(false);
   const [sliding, setSliding] = createSignal(false);
   const [localAngle, setLocalAngle] = createSignal(0);
   const [configError, setConfigError] = createSignal<string | null>(null);
@@ -31,11 +30,6 @@ export default function App() {
 
   const setAngle = (angle: number) => send({ type: 'damper.set', angle });
   const setAuto = () => send({ type: 'damper.set', auto: true });
-  const scanHeaters = () => {
-    setScanning(true);
-    send({ type: 'heaters.scan', timeout: 5 });
-    setTimeout(() => setScanning(false), 5500);
-  };
   const selectHeater = (name: string) => {
     if (!name) {
       send({ type: 'heaters.disconnect' });
@@ -310,33 +304,27 @@ export default function App() {
         <section class="card">
           <div class="card-header">
             <span class="card-title">Heater</span>
-            <div class="card-header-right">
-              <Show when={heaters()?.devices?.length}>
-                <void-select size="sm"
-                  ref={selectRef}
-                  value={selectedHeater()}
-                  placeholder="Select heater"
-                  onChange={(e: Event) => selectHeater((e.target as HTMLSelectElement).value)}>
-                  <option value="">None</option>
-                  <For each={heaters()!.devices}>
-                    {(device) => (
-                      <option value={device.name}>
-                        {device.name} ({device.protocol})
-                      </option>
-                    )}
-                  </For>
-                </void-select>
-              </Show>
-              <void-button variant="outline" size="sm" onClick={scanHeaters}
-                disabled={scanning()}>
-                {scanning() ? 'Scanning...' : 'Scan'}
-              </void-button>
-            </div>
+            <Show when={heaters()?.devices?.length}>
+              <void-select size="sm"
+                ref={selectRef}
+                value={selectedHeater()}
+                placeholder="Select heater"
+                onChange={(e: Event) => selectHeater((e.target as HTMLSelectElement).value)}>
+                <option value="">None</option>
+                <For each={heaters()!.devices}>
+                  {(device) => (
+                    <option value={device.name}>
+                      {device.name} ({device.protocol})
+                    </option>
+                  )}
+                </For>
+              </void-select>
+            </Show>
           </div>
           <div class="card-body">
             <Show when={heater()?.connected} fallback={
               <div class="stat-value heater-placeholder">
-                {heaters()?.devices?.length ? 'Select a heater' : 'Scan to discover heaters'}
+                {heaters()?.devices?.length ? 'Select a heater' : 'Searching for heaters...'}
               </div>
             }>
               <Show when={heater()!.error}>

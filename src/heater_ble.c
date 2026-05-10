@@ -70,6 +70,8 @@ static void start_discovery(void);
 static void subscribe_notify(void);
 static void heartbeat_handler(struct k_work *work);
 static void reconnect_handler(struct k_work *work);
+static void schedule_rescan(void);
+int heater_ble_scan(int timeout_sec);
 int heater_ble_connect(int index);
 
 static K_WORK_DELAYABLE_DEFINE(heartbeat_work, heartbeat_handler);
@@ -367,6 +369,8 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
   if (auto_reconnect && connected_index >= 0) {
     LOG_INF("Will reconnect in %d ms", RECONNECT_DELAY_MS);
     k_work_schedule(&reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+  } else {
+    schedule_rescan();
   }
 }
 
@@ -448,11 +452,32 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 }
 
 //////////////////////////////////////////////////////////////
-// Scan Timeout
+// Scan Timeout & Periodic Rescan
 //////////////////////////////////////////////////////////////
 
+#define RESCAN_INTERVAL_SEC 15
+
 static void scan_timeout_handler(struct k_work *work);
+static void rescan_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(scan_timeout_work, scan_timeout_handler);
+static K_WORK_DELAYABLE_DEFINE(rescan_work, rescan_handler);
+
+static void schedule_rescan(void)
+{
+  if (!heater_conn) {
+    k_work_schedule(&rescan_work, K_SECONDS(RESCAN_INTERVAL_SEC));
+  }
+}
+
+static void rescan_handler(struct k_work *work)
+{
+  ARG_UNUSED(work);
+
+  if (heater_conn || scanning) {
+    return;
+  }
+  heater_ble_scan(5);
+}
 
 static void scan_timeout_handler(struct k_work *work)
 {
@@ -463,6 +488,7 @@ static void scan_timeout_handler(struct k_work *work)
     scanning = false;
     LOG_INF("Scan complete: %d device(s) found", scan_count);
     publish_devices();
+    schedule_rescan();
   }
 }
 
@@ -545,6 +571,7 @@ int heater_ble_connect(int index)
   if (scanning) {
     heater_ble_scan_stop();
   }
+  k_work_cancel_delayable(&rescan_work);
 
   struct ble_scan_result *r = &scan_results[index];
 
@@ -561,6 +588,7 @@ int heater_ble_connect(int index)
   if (err) {
     LOG_ERR("Connect failed: %d", err);
     heater_conn = NULL;
+    schedule_rescan();
     return err;
   }
 
