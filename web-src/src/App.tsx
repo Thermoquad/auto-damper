@@ -8,6 +8,7 @@ export default function App() {
   const [sliding, setSliding] = createSignal(false);
   const [localAngle, setLocalAngle] = createSignal(0);
   const [configError, setConfigError] = createSignal<string | null>(null);
+  const [damperTab, setDamperTab] = createSignal<'control' | 'ranges'>('control');
   let selectRef: HTMLElement | undefined;
 
   const selectedHeater = () => heater()?.connected ? heater()!.name ?? '' : '';
@@ -150,43 +151,162 @@ export default function App() {
               </void-badge>
             </Show>
           </div>
-          <div class="card-body">
-            <Show when={damper()} fallback={<div class="stat-value">--</div>}>
-              <div class="stat-value">{damper()!.angle.toFixed(1)}°</div>
-              <Show when={damper()!.position !== null}>
-                <div class="stat-label">
-                  {positions()?.find(p => p.id === damper()!.position)?.label ?? `Position ${damper()!.position}`}
-                </div>
+          <div class="card-tabs">
+            <button class={`tab ${damperTab() === 'control' ? 'active' : ''}`}
+              onClick={() => setDamperTab('control')}>Control</button>
+            <button class={`tab ${damperTab() === 'ranges' ? 'active' : ''}`}
+              onClick={() => setDamperTab('ranges')}>Ranges</button>
+          </div>
+          <Show when={damperTab() === 'control'}>
+            <div class="card-body">
+              <Show when={damper()} fallback={<div class="stat-value">--</div>}>
+                <div class="stat-value">{damper()!.angle.toFixed(1)}°</div>
+                <Show when={damper()!.position !== null}>
+                  <div class="stat-label">
+                    {positions()?.find(p => p.id === damper()!.position)?.label ?? `Position ${damper()!.position}`}
+                  </div>
+                </Show>
               </Show>
-            </Show>
-          </div>
-          <div class="card-actions damper-angle-controls">
-            <div class="angle-slider-row">
-              <input
-                type="range" min="0" max="270" step="0.5"
-                class="angle-slider"
-                value={localAngle()}
-                onPointerDown={() => setSliding(true)}
-                onInput={(e) => setLocalAngle(parseFloat(e.currentTarget.value))}
-                onChange={(e) => {
-                  setAngle(parseFloat(e.currentTarget.value));
-                  setSliding(false);
-                }}
-              />
-              <input
-                type="number" min="0" max="270" step="0.5"
-                class="angle-input"
-                value={localAngle().toFixed(1)}
-                onChange={(e) => {
-                  const v = parseFloat(e.currentTarget.value);
-                  if (!isNaN(v)) setAngle(Math.max(0, Math.min(270, v)));
-                }}
-              />
             </div>
-            <void-button variant="filled" size="sm" color="info" onClick={setAuto}>
-              Auto
-            </void-button>
-          </div>
+            <div class="card-actions damper-angle-controls">
+              <div class="angle-slider-row">
+                <input
+                  type="range" min="0" max="270" step="0.5"
+                  class="angle-slider"
+                  value={localAngle()}
+                  onPointerDown={() => setSliding(true)}
+                  onInput={(e) => setLocalAngle(parseFloat(e.currentTarget.value))}
+                  onChange={(e) => {
+                    setAngle(parseFloat(e.currentTarget.value));
+                    setSliding(false);
+                  }}
+                />
+                <input
+                  type="number" min="0" max="270" step="0.5"
+                  class="angle-input"
+                  value={localAngle().toFixed(1)}
+                  onChange={(e) => {
+                    const v = parseFloat(e.currentTarget.value);
+                    if (!isNaN(v)) setAngle(Math.max(0, Math.min(270, v)));
+                  }}
+                />
+              </div>
+              <void-button variant="filled" size="sm" color="info" onClick={setAuto}>
+                Auto
+              </void-button>
+            </div>
+          </Show>
+          <Show when={damperTab() === 'ranges'}>
+            <div class="card-body config-body">
+              <div class="config-section">
+                <div class="config-section-header">
+                  <span class="stat-label">Positions</span>
+                  <void-button variant="outline" size="sm"
+                    onClick={() => {
+                      const ps = positions() ?? [];
+                      const nextId = ps.length > 0 ? Math.max(...ps.map(p => p.id)) + 1 : 0;
+                      savePosition(nextId, `Pos ${nextId}`, 0);
+                    }}>
+                    +
+                  </void-button>
+                </div>
+                <Show when={positions()?.length} fallback={
+                  <div class="config-empty">No positions configured</div>
+                }>
+                  <For each={positions()}>
+                    {(pos) => (
+                      <div class="config-row">
+                        <void-button variant="outline" size="sm"
+                          onClick={() => send({ type: 'damper.set', position: pos.id })}>
+                          ▶
+                        </void-button>
+                        <input
+                          type="text" class="config-label-input"
+                          value={pos.label}
+                          maxLength={15}
+                          onChange={(e) => savePosition(pos.id, e.currentTarget.value, pos.angle)}
+                        />
+                        <input
+                          type="number" class="config-angle-input"
+                          min="0" max="270" step="0.5"
+                          value={pos.angle.toFixed(1)}
+                          onChange={(e) => {
+                            const v = parseFloat(e.currentTarget.value);
+                            if (!isNaN(v)) savePosition(pos.id, pos.label, Math.max(0, Math.min(270, v)));
+                          }}
+                        />
+                        <span class="config-unit">°</span>
+                        <void-button variant="outline" size="sm" color="error"
+                          onClick={() => deletePosition(pos.id)}>
+                          ×
+                        </void-button>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+              </div>
+
+              <div class="config-section">
+                <div class="config-section-header">
+                  <span class="stat-label">Targets</span>
+                  <void-button variant="outline" size="sm"
+                    onClick={() => {
+                      const ts = targets() ?? [];
+                      const ps = positions() ?? [];
+                      if (!ps.length) return;
+                      const nextId = ts.length > 0 ? Math.max(...ts.map(t => t.id)) + 1 : 0;
+                      saveTarget(nextId, [0, 50], ps[0].id);
+                    }}>
+                    +
+                  </void-button>
+                </div>
+                <Show when={configError()}>
+                  <div class="config-error">{configError()}</div>
+                </Show>
+                <Show when={targets()?.length} fallback={
+                  <div class="config-empty">No targets configured</div>
+                }>
+                  <For each={targets()}>
+                    {(tgt) => (
+                      <div class="config-row">
+                        <input
+                          type="number" class="config-temp-input"
+                          step="1"
+                          value={tgt.range[0]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.currentTarget.value);
+                            if (!isNaN(v)) saveTarget(tgt.id, [v, tgt.range[1]], tgt.position);
+                          }}
+                        />
+                        <span class="config-separator">–</span>
+                        <input
+                          type="number" class="config-temp-input"
+                          step="1"
+                          value={tgt.range[1]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.currentTarget.value);
+                            if (!isNaN(v)) saveTarget(tgt.id, [tgt.range[0], v], tgt.position);
+                          }}
+                        />
+                        <span class="config-unit">°C →</span>
+                        <select class="config-pos-select"
+                          value={tgt.position}
+                          onChange={(e) => saveTarget(tgt.id, tgt.range, parseInt(e.currentTarget.value))}>
+                          <For each={positions() ?? []}>
+                            {(pos) => <option value={pos.id}>{pos.label}</option>}
+                          </For>
+                        </select>
+                        <void-button variant="outline" size="sm" color="error"
+                          onClick={() => deleteTarget(tgt.id)}>
+                          ×
+                        </void-button>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+              </div>
+            </div>
+          </Show>
         </section>
 
         <section class="card">
@@ -332,120 +452,6 @@ export default function App() {
           </div>
         </section>
 
-        <section class="card">
-          <div class="card-header">
-            <span class="card-title">Damper Ranges</span>
-          </div>
-          <div class="card-body config-body">
-            <div class="config-section">
-              <div class="config-section-header">
-                <span class="stat-label">Positions</span>
-                <void-button variant="outline" size="sm"
-                  onClick={() => {
-                    const ps = positions() ?? [];
-                    const nextId = ps.length > 0 ? Math.max(...ps.map(p => p.id)) + 1 : 0;
-                    savePosition(nextId, `Pos ${nextId}`, 0);
-                  }}>
-                  +
-                </void-button>
-              </div>
-              <Show when={positions()?.length} fallback={
-                <div class="config-empty">No positions configured</div>
-              }>
-                <For each={positions()}>
-                  {(pos) => (
-                    <div class="config-row">
-                      <void-button variant="outline" size="sm"
-                        onClick={() => send({ type: 'damper.set', position: pos.id })}>
-                        ▶
-                      </void-button>
-                      <input
-                        type="text" class="config-label-input"
-                        value={pos.label}
-                        maxLength={15}
-                        onChange={(e) => savePosition(pos.id, e.currentTarget.value, pos.angle)}
-                      />
-                      <input
-                        type="number" class="config-angle-input"
-                        min="0" max="270" step="0.5"
-                        value={pos.angle.toFixed(1)}
-                        onChange={(e) => {
-                          const v = parseFloat(e.currentTarget.value);
-                          if (!isNaN(v)) savePosition(pos.id, pos.label, Math.max(0, Math.min(270, v)));
-                        }}
-                      />
-                      <span class="config-unit">°</span>
-                      <void-button variant="outline" size="sm" color="error"
-                        onClick={() => deletePosition(pos.id)}>
-                        ×
-                      </void-button>
-                    </div>
-                  )}
-                </For>
-              </Show>
-            </div>
-
-            <div class="config-section">
-              <div class="config-section-header">
-                <span class="stat-label">Targets</span>
-                <void-button variant="outline" size="sm"
-                  onClick={() => {
-                    const ts = targets() ?? [];
-                    const ps = positions() ?? [];
-                    if (!ps.length) return;
-                    const nextId = ts.length > 0 ? Math.max(...ts.map(t => t.id)) + 1 : 0;
-                    saveTarget(nextId, [0, 50], ps[0].id);
-                  }}>
-                  +
-                </void-button>
-              </div>
-              <Show when={configError()}>
-                <div class="config-error">{configError()}</div>
-              </Show>
-              <Show when={targets()?.length} fallback={
-                <div class="config-empty">No targets configured</div>
-              }>
-                <For each={targets()}>
-                  {(tgt) => (
-                    <div class="config-row">
-                      <input
-                        type="number" class="config-temp-input"
-                        step="1"
-                        value={tgt.range[0]}
-                        onChange={(e) => {
-                          const v = parseFloat(e.currentTarget.value);
-                          if (!isNaN(v)) saveTarget(tgt.id, [v, tgt.range[1]], tgt.position);
-                        }}
-                      />
-                      <span class="config-separator">–</span>
-                      <input
-                        type="number" class="config-temp-input"
-                        step="1"
-                        value={tgt.range[1]}
-                        onChange={(e) => {
-                          const v = parseFloat(e.currentTarget.value);
-                          if (!isNaN(v)) saveTarget(tgt.id, [tgt.range[0], v], tgt.position);
-                        }}
-                      />
-                      <span class="config-unit">°C →</span>
-                      <select class="config-pos-select"
-                        value={tgt.position}
-                        onChange={(e) => saveTarget(tgt.id, tgt.range, parseInt(e.currentTarget.value))}>
-                        <For each={positions() ?? []}>
-                          {(pos) => <option value={pos.id}>{pos.label}</option>}
-                        </For>
-                      </select>
-                      <void-button variant="outline" size="sm" color="error"
-                        onClick={() => deleteTarget(tgt.id)}>
-                        ×
-                      </void-button>
-                    </div>
-                  )}
-                </For>
-              </Show>
-            </div>
-          </div>
-        </section>
       </main>
     </div>
   );
