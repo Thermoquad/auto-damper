@@ -1,10 +1,23 @@
-import { Show, For, createSignal } from 'solid-js';
+import { Show, For, createSignal, createEffect } from 'solid-js';
 import '@voidable/ui';
 import { createWs } from './ws';
 
 export default function App() {
   const { connected, temperature, damper, heater, heaters, send } = createWs();
   const [scanning, setScanning] = createSignal(false);
+  let selectRef: HTMLElement | undefined;
+
+  const selectedHeater = () => heater()?.connected ? heater()!.name ?? '' : '';
+
+  createEffect(() => {
+    const val = selectedHeater();
+    if (selectRef) {
+      const inner = selectRef.querySelector('select') as HTMLSelectElement | null;
+      if (inner && inner.value !== val) {
+        inner.value = val;
+      }
+    }
+  });
 
   const setAngle = (angle: number) => send({ type: 'damper.set', angle });
   const setAuto = () => send({ type: 'damper.set', auto: true });
@@ -104,7 +117,8 @@ export default function App() {
             <div class="card-header-right">
               <Show when={heaters()?.devices?.length}>
                 <void-select size="sm"
-                  value={heater()?.connected ? heater()!.name ?? '' : ''}
+                  ref={selectRef}
+                  value={selectedHeater()}
                   placeholder="Select heater"
                   onChange={(e: Event) => selectHeater((e.target as HTMLSelectElement).value)}>
                   <option value="">None</option>

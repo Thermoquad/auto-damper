@@ -59,6 +59,9 @@ static struct bt_uuid_16 disc_uuid;
 static struct bt_gatt_subscribe_params sub_params;
 static struct bt_gatt_discover_params ccc_disc_params;
 
+static int connected_index = -1;
+static bool auto_reconnect;
+
 //////////////////////////////////////////////////////////////
 // Forward Declarations
 //////////////////////////////////////////////////////////////
@@ -66,8 +69,13 @@ static struct bt_gatt_discover_params ccc_disc_params;
 static void start_discovery(void);
 static void subscribe_notify(void);
 static void heartbeat_handler(struct k_work *work);
+static void reconnect_handler(struct k_work *work);
+int heater_ble_connect(int index);
 
 static K_WORK_DELAYABLE_DEFINE(heartbeat_work, heartbeat_handler);
+static K_WORK_DELAYABLE_DEFINE(reconnect_work, reconnect_handler);
+
+#define RECONNECT_DELAY_MS 3000
 
 //////////////////////////////////////////////////////////////
 // Zbus Channel
@@ -112,6 +120,26 @@ static void start_heartbeat(void)
 static void stop_heartbeat(void)
 {
   k_work_cancel_delayable(&heartbeat_work);
+}
+
+//////////////////////////////////////////////////////////////
+// Auto-Reconnect
+//////////////////////////////////////////////////////////////
+
+static void reconnect_handler(struct k_work *work)
+{
+  ARG_UNUSED(work);
+
+  if (heater_conn || !auto_reconnect || connected_index < 0) {
+    return;
+  }
+
+  LOG_INF("Auto-reconnecting to index %d...", connected_index);
+  int err = heater_ble_connect(connected_index);
+  if (err && err != -EALREADY) {
+    LOG_WRN("Reconnect failed: %d, retrying...", err);
+    k_work_schedule(&reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+  }
 }
 
 //////////////////////////////////////////////////////////////
@@ -278,6 +306,9 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
     LOG_ERR("Connect failed: %u", err);
     bt_conn_unref(heater_conn);
     heater_conn = NULL;
+    if (auto_reconnect && connected_index >= 0) {
+      k_work_schedule(&reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+    }
     return;
   }
 
@@ -301,6 +332,11 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
   struct heater_data hdata = {.connected = false};
 
   zbus_chan_pub(&heater_data_chan, &hdata, K_MSEC(100));
+
+  if (auto_reconnect && connected_index >= 0) {
+    LOG_INF("Will reconnect in %d ms", RECONNECT_DELAY_MS);
+    k_work_schedule(&reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+  }
 }
 
 BT_CONN_CB_DEFINE(heater_conn_cbs) = {
@@ -495,12 +531,19 @@ int heater_ble_connect(int index)
     return err;
   }
 
+  connected_index = index;
+  auto_reconnect = true;
+
   LOG_INF("Connecting to %s (%s)...", r->name, active_protocol->name);
   return 0;
 }
 
 int heater_ble_disconnect(void)
 {
+  auto_reconnect = false;
+  connected_index = -1;
+  k_work_cancel_delayable(&reconnect_work);
+
   if (!heater_conn) {
     return -ENOTCONN;
   }
