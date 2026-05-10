@@ -16,9 +16,20 @@ export default function App() {
       setScanning(false);
     }, 5500);
   };
-  const connectHeater = (name: string) => send({ type: 'heaters.connect', name });
+  const selectHeater = (name: string) => {
+    if (!name) {
+      send({ type: 'heaters.disconnect' });
+      return;
+    }
+    if (heater()?.connected && heater()!.name === name) return;
+    if (heater()?.connected) {
+      send({ type: 'heaters.disconnect' });
+      setTimeout(() => send({ type: 'heaters.connect', name }), 300);
+    } else {
+      send({ type: 'heaters.connect', name });
+    }
+  };
   const disconnectHeater = () => send({ type: 'heaters.disconnect' });
-  const refreshList = () => send({ type: 'heaters.list' });
 
   return (
     <div class="shell">
@@ -90,12 +101,34 @@ export default function App() {
         <section class="card">
           <div class="card-header">
             <span class="card-title">Heater</span>
-            <Show when={heater()?.connected}>
-              <void-badge color="success">Connected</void-badge>
-            </Show>
+            <div class="card-header-right">
+              <Show when={heaters()?.devices?.length}>
+                <void-select size="sm"
+                  value={heater()?.connected ? heater()!.name ?? '' : ''}
+                  placeholder="Select heater"
+                  onChange={(e: Event) => selectHeater((e.target as HTMLSelectElement).value)}>
+                  <option value="">None</option>
+                  <For each={heaters()!.devices}>
+                    {(device) => (
+                      <option value={device.name}>
+                        {device.name} ({device.protocol})
+                      </option>
+                    )}
+                  </For>
+                </void-select>
+              </Show>
+              <void-button variant="outline" size="sm" onClick={scanHeaters}
+                disabled={scanning()}>
+                {scanning() ? 'Scanning...' : 'Scan'}
+              </void-button>
+            </div>
           </div>
           <div class="card-body">
-            <Show when={heater()?.connected}>
+            <Show when={heater()?.connected} fallback={
+              <div class="stat-value heater-placeholder">
+                {heaters()?.devices?.length ? 'Select a heater' : 'Scan to discover heaters'}
+              </div>
+            }>
               <div class="stat-grid">
                 <div class="stat-item">
                   <div class="stat-label">Power</div>
@@ -134,41 +167,6 @@ export default function App() {
                 <void-button variant="outline" size="sm" color="error" onClick={disconnectHeater}>
                   Disconnect
                 </void-button>
-              </div>
-            </Show>
-
-            <Show when={!heater()?.connected}>
-              <div class="heater-controls">
-                <div class="card-actions">
-                  <void-button variant="filled" size="sm" onClick={scanHeaters}
-                    disabled={scanning()}>
-                    {scanning() ? 'Scanning...' : 'Scan'}
-                  </void-button>
-                  <Show when={heaters()?.devices?.length}>
-                    <void-button variant="outline" size="sm" onClick={refreshList}>
-                      Refresh
-                    </void-button>
-                  </Show>
-                </div>
-
-                <Show when={heaters()?.devices?.length}>
-                  <div class="heater-list">
-                    <For each={heaters()!.devices}>
-                      {(device) => (
-                        <div class="heater-item">
-                          <div class="heater-item-info">
-                            <span class="heater-item-name">{device.name}</span>
-                            <span class="heater-item-meta">{device.protocol} · {device.rssi} dBm</span>
-                          </div>
-                          <void-button variant="outline" size="sm"
-                            onClick={() => connectHeater(device.name)}>
-                            Connect
-                          </void-button>
-                        </div>
-                      )}
-                    </For>
-                  </div>
-                </Show>
               </div>
             </Show>
           </div>

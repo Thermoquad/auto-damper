@@ -128,47 +128,16 @@ body {
   font-family: var(--void-font-mono);
 }
 
-/* Heater List */
-.heater-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin-top: var(--void-space-3);
-  border: 1px solid var(--void-color-border);
-  border-radius: var(--void-radius-md);
-  overflow: hidden;
-}
-
-.heater-item {
+/* Card Header Right */
+.card-header-right {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--void-space-3) var(--void-space-4);
-  background: var(--void-color-bg-secondary);
-  cursor: pointer;
-  transition: background 0.1s;
+  gap: var(--void-space-2);
 }
 
-.heater-item:hover {
-  background: var(--void-color-bg-tertiary, rgba(255,255,255,0.06));
-}
-
-.heater-item + .heater-item {
-  border-top: 1px solid var(--void-color-border);
-}
-
-.heater-item-info {
-  display: flex;
-  flex-direction: column;
-  gap: var(--void-space-1);
-}
-
-.heater-item-name {
-  font-weight: var(--void-weight-semibold);
-  font-size: var(--void-text-sm);
-}
-
-.heater-item-meta {
-  font-size: var(--void-text-xs);
+.heater-placeholder {
+  font-size: var(--void-text-lg);
   color: var(--void-color-text-muted);
+  font-weight: var(--void-weight-normal);
+  font-family: var(--void-font-sans);
 }

@@ -561,6 +561,15 @@ int heater_ble_get_connected_index(void)
   return -1;
 }
 
+const char *heater_ble_get_connected_name(void)
+{
+  int idx = heater_ble_get_connected_index();
+  if (idx < 0) {
+    return NULL;
+  }
+  return scan_results[idx].name;
+}
+
 int heater_ble_send_power(bool on)
 {
   if (!heater_conn || !active_protocol || write_handle == 0) {

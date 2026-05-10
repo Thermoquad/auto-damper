@@ -9,6 +9,7 @@ export type DamperMsg = {
 };
 export type HeaterMsg = {
   type: 'heater';
+  name: string | null;
   power: string;
   step: string;
   mode: string;

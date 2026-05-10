@@ -43,6 +43,7 @@ struct ble_scan_result {
 
 extern const struct ble_scan_result *heater_ble_get_scan_result(int index);
 extern int heater_ble_get_connected_index(void);
+extern const char *heater_ble_get_connected_name(void);
 
 //////////////////////////////////////////////////////////////
 // HTTP Service (defined in http_api.c)
@@ -166,12 +167,15 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
     } else if (chan == &heater_data_chan) {
       struct heater_data data;
       zbus_chan_read(chan, &data, K_NO_WAIT);
+      const char *name = heater_ble_get_connected_name();
       len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
           "{\"type\":\"heater\","
+          "\"name\":%s%s%s,"
           "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
           "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
           "\"power_level\":%d,\"error\":%d,\"connected\":%s}",
+          name ? "\"" : "", name ? name : "null", name ? "\"" : "",
           heater_power_state_str(data.power),
           heater_run_step_str(data.step),
           heater_run_mode_str(data.mode),
