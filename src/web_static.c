@@ -55,13 +55,6 @@ HTTP_RESOURCE_DEFINE(web_index_html, damper_http_service,
 
 #if WEB_ASSET_COUNT > 0
 
-#define ASSET_CHUNK_SIZE 1024
-
-static struct {
-  int idx;
-  size_t offset;
-} asset_send = {.idx = -1};
-
 static struct http_header asset_hdrs[3] = {
     {.name = "Content-Encoding", .value = "gzip"},
     {.name = "Cache-Control", .value = "public, max-age=31536000, immutable"},
@@ -74,23 +67,6 @@ static int handle_asset(struct http_client_ctx *client,
                         struct http_response_ctx *response_ctx,
                         void *user_data)
 {
-  if (status == HTTP_SERVER_TRANSACTION_COMPLETE) {
-    asset_send.idx = -1;
-    return 0;
-  }
-
-  if (asset_send.idx >= 0) {
-    const struct web_asset *a = &web_assets[asset_send.idx];
-    size_t remaining = a->len - asset_send.offset;
-    size_t chunk = MIN(remaining, ASSET_CHUNK_SIZE);
-
-    response_ctx->body = a->data + asset_send.offset;
-    response_ctx->body_len = chunk;
-    asset_send.offset += chunk;
-    response_ctx->final_chunk = (asset_send.offset >= a->len);
-    return 0;
-  }
-
   if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
@@ -100,17 +76,13 @@ static int handle_asset(struct http_client_ctx *client,
   for (int i = 0; i < WEB_ASSET_COUNT; i++) {
     if (strcmp(url, web_assets[i].path) == 0) {
       const struct web_asset *a = &web_assets[i];
-      size_t chunk = MIN(a->len, ASSET_CHUNK_SIZE);
 
       LOG_INF("Serving %s (%zu bytes, content-type %s)", a->path, a->len,
               a->content_type);
 
-      asset_send.idx = i;
-      asset_send.offset = chunk;
-
       response_ctx->body = a->data;
-      response_ctx->body_len = chunk;
-      response_ctx->final_chunk = (chunk >= a->len);
+      response_ctx->body_len = a->len;
+      response_ctx->final_chunk = true;
       response_ctx->status = HTTP_200_OK;
       asset_hdrs[2].value = a->content_type;
       response_ctx->headers = asset_hdrs;
