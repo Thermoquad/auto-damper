@@ -395,6 +395,22 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
+  } else if (strcmp(type, "damper.status") == 0) {
+    struct damper_data data;
+    zbus_chan_read(&damper_data_chan, &data, K_NO_WAIT);
+    char pos_str[8];
+    if (data.position_id >= 0) {
+      snprintf(pos_str, sizeof(pos_str), "%d", data.position_id);
+    } else {
+      strcpy(pos_str, "null");
+    }
+    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
+        "{\"type\":\"damper\",\"mode\":\"%s\",\"angle\":%.1f,\"position\":%s}",
+        data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
+        data.angle, pos_str);
+    ws_send_to(slot, ws_cmd_buf, len);
+    return;
+
   } else if (strcmp(type, "positions.list") == 0) {
     int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
         "{\"type\":\"positions\",\"positions\":[");

@@ -68,6 +68,7 @@ export default function App() {
   const adjustPower = (delta: number) => heaterCmd({ power_level: delta });
 
   const loadConfig = () => {
+    send({ type: 'damper.status' });
     send({ type: 'positions.list' });
     send({ type: 'targets.list' });
   };
@@ -128,7 +129,9 @@ export default function App() {
             <Show when={damper()} fallback={<div class="stat-value">--</div>}>
               <div class="stat-value">{damper()!.angle.toFixed(1)}°</div>
               <Show when={damper()!.position !== null}>
-                <div class="stat-label">Position {damper()!.position}</div>
+                <div class="stat-label">
+                  {positions()?.find(p => p.id === damper()!.position)?.label ?? `Position ${damper()!.position}`}
+                </div>
               </Show>
             </Show>
           </div>
@@ -327,6 +330,10 @@ export default function App() {
                 <For each={positions()}>
                   {(pos) => (
                     <div class="config-row">
+                      <void-button variant="outline" size="sm"
+                        onClick={() => send({ type: 'damper.set', position: pos.id })}>
+                        ▶
+                      </void-button>
                       <input
                         type="text" class="config-label-input"
                         value={pos.label}
