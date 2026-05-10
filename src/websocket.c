@@ -347,7 +347,8 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
         .position_id = id, .angle = angle};
     strncpy(cmd.label, label, sizeof(cmd.label) - 1);
     zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    ws_send_result(slot, true, NULL);
+    int rc = damper_last_config_result();
+    ws_send_result(slot, rc == 0, rc == -EINVAL ? "invalid" : rc < 0 ? "save failed" : NULL);
 
   } else if (strcmp(type, "positions.delete") == 0) {
     int id;
@@ -361,7 +362,8 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     }
     struct damper_command cmd = {.type = DAMPER_CMD_POSITION_DELETE, .position_id = id};
     zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    ws_send_result(slot, true, NULL);
+    int rc = damper_last_config_result();
+    ws_send_result(slot, rc == 0, rc < 0 ? "not found" : NULL);
 
   } else if (strcmp(type, "targets.set") == 0) {
     int id, position_id;
@@ -383,7 +385,16 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
         .target_id = id, .position_id = position_id,
         .range_low = range_low, .range_high = range_high};
     zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    ws_send_result(slot, true, NULL);
+    int rc = damper_last_config_result();
+    if (rc == -EEXIST) {
+      ws_send_result(slot, false, "overlapping range");
+    } else if (rc == -EINVAL) {
+      ws_send_result(slot, false, "invalid range");
+    } else if (rc == -ENOENT) {
+      ws_send_result(slot, false, "unknown position");
+    } else {
+      ws_send_result(slot, rc == 0, rc < 0 ? "save failed" : NULL);
+    }
 
   } else if (strcmp(type, "targets.delete") == 0) {
     int id;
@@ -393,7 +404,8 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     }
     struct damper_command cmd = {.type = DAMPER_CMD_TARGET_DELETE, .target_id = id};
     zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    ws_send_result(slot, true, NULL);
+    int rc = damper_last_config_result();
+    ws_send_result(slot, rc == 0, rc < 0 ? "not found" : NULL);
 
   } else if (strcmp(type, "damper.status") == 0) {
     struct damper_data data;

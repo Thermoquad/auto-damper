@@ -287,3 +287,11 @@ body {
   color: var(--void-color-text-muted);
   font-style: italic;
 }
+
+.config-error {
+  font-size: var(--void-text-sm);
+  color: var(--void-color-error);
+  padding: 0.25rem 0.5rem;
+  background: color-mix(in srgb, var(--void-color-error) 10%, transparent);
+  border-radius: var(--void-radius-sm);
+}

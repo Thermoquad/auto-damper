@@ -18,4 +18,6 @@ struct servo_config *servo_config_get(void);
 int servo_config_save(void);
 int servo_config_load(void);
 
+int damper_last_config_result(void);
+
 #endif

@@ -63,6 +63,7 @@ struct damper_ctx {
 
 static struct damper_ctx s;
 static K_MUTEX_DEFINE(damper_mutex);
+static volatile int config_result;
 
 #define LOOP_SLEEP K_MSEC(250)
 #define MUTEX_WAIT K_FOREVER
@@ -189,6 +190,8 @@ static void command_callback(const struct zbus_channel *chan)
 
   k_mutex_lock(&damper_mutex, MUTEX_WAIT);
 
+  config_result = 0;
+
   switch (cmd->type) {
   case DAMPER_CMD_SET_AUTO:
     smf_set_state(SMF_CTX(&s), &states[DAMPER_STATE_AUTO]);
@@ -201,6 +204,7 @@ static void command_callback(const struct zbus_channel *chan)
       move_to_angle(p->angle, cmd->position_id);
     } else {
       LOG_WRN("Unknown position %d", cmd->position_id);
+      config_result = -ENOENT;
     }
     break;
   }
@@ -211,23 +215,28 @@ static void command_callback(const struct zbus_channel *chan)
     break;
 
   case DAMPER_CMD_POSITION_SET:
-    positions_set(cmd->position_id, cmd->label, cmd->angle);
+    config_result = positions_set(cmd->position_id, cmd->label, cmd->angle);
     break;
 
   case DAMPER_CMD_POSITION_DELETE:
-    positions_delete(cmd->position_id);
+    config_result = positions_delete(cmd->position_id);
     break;
 
   case DAMPER_CMD_TARGET_SET:
-    targets_set(cmd->target_id, cmd->range_low, cmd->range_high, cmd->position_id);
+    config_result = targets_set(cmd->target_id, cmd->range_low, cmd->range_high, cmd->position_id);
     break;
 
   case DAMPER_CMD_TARGET_DELETE:
-    targets_delete(cmd->target_id);
+    config_result = targets_delete(cmd->target_id);
     break;
   }
 
   k_mutex_unlock(&damper_mutex);
+}
+
+int damper_last_config_result(void)
+{
+  return config_result;
 }
 
 ZBUS_LISTENER_DEFINE(damper_temp_listener, temperature_callback);

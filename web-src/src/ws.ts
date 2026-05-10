@@ -101,5 +101,10 @@ export function createWs() {
     ws?.close();
   });
 
-  return { connected, temperature, damper, heater, heaters, positions, targets, lastResult, send };
+  function sendCmd(msg: Record<string, unknown>) {
+    setLastResult(null);
+    send(msg);
+  }
+
+  return { connected, temperature, damper, heater, heaters, positions, setPositions, targets, setTargets, lastResult, send, sendCmd };
 }

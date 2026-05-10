@@ -3,10 +3,11 @@ import '@voidable/ui';
 import { createWs, type PositionsMsg, type TargetsMsg } from './ws';
 
 export default function App() {
-  const { connected, temperature, damper, heater, heaters, positions, targets, send } = createWs();
+  const { connected, temperature, damper, heater, heaters, positions, setPositions, targets, setTargets, lastResult, send, sendCmd } = createWs();
   const [scanning, setScanning] = createSignal(false);
   const [sliding, setSliding] = createSignal(false);
   const [localAngle, setLocalAngle] = createSignal(0);
+  const [configError, setConfigError] = createSignal<string | null>(null);
   let selectRef: HTMLElement | undefined;
 
   const selectedHeater = () => heater()?.connected ? heater()!.name ?? '' : '';
@@ -74,21 +75,45 @@ export default function App() {
   };
   createEffect(() => { if (connected()) loadConfig(); });
 
+  const sendAndCheck = (msg: Record<string, unknown>, onError?: () => void) => {
+    setConfigError(null);
+    sendCmd(msg);
+    setTimeout(() => {
+      const r = lastResult();
+      if (r && !r.ok) {
+        setConfigError(r.error ?? 'unknown error');
+        if (onError) onError();
+      }
+    }, 80);
+  };
+
   const savePosition = (id: number, label: string, angle: number) => {
-    send({ type: 'positions.set', id, label, angle });
-    setTimeout(loadConfig, 100);
+    const prev = positions() ?? [];
+    setPositions(() => {
+      const exists = prev.find(p => p.id === id);
+      if (exists) return prev.map(p => p.id === id ? { ...p, label, angle } : p);
+      return [...prev, { id, label, angle }];
+    });
+    sendAndCheck({ type: 'positions.set', id, label, angle }, () => setPositions(prev));
   };
   const deletePosition = (id: number) => {
-    send({ type: 'positions.delete', id });
-    setTimeout(loadConfig, 100);
+    const prev = positions() ?? [];
+    setPositions(prev.filter(p => p.id !== id));
+    sendAndCheck({ type: 'positions.delete', id }, () => setPositions(prev));
   };
   const saveTarget = (id: number, range: [number, number], position: number) => {
-    send({ type: 'targets.set', id, range, position });
-    setTimeout(loadConfig, 100);
+    const prev = targets() ?? [];
+    setTargets(() => {
+      const exists = prev.find(t => t.id === id);
+      if (exists) return prev.map(t => t.id === id ? { ...t, range, position } : t);
+      return [...prev, { id, range, position }];
+    });
+    sendAndCheck({ type: 'targets.set', id, range, position }, () => setTargets(prev));
   };
   const deleteTarget = (id: number) => {
-    send({ type: 'targets.delete', id });
-    setTimeout(loadConfig, 100);
+    const prev = targets() ?? [];
+    setTargets(prev.filter(t => t.id !== id));
+    sendAndCheck({ type: 'targets.delete', id }, () => setTargets(prev));
   };
 
   return (
@@ -374,6 +399,9 @@ export default function App() {
                   +
                 </void-button>
               </div>
+              <Show when={configError()}>
+                <div class="config-error">{configError()}</div>
+              </Show>
               <Show when={targets()?.length} fallback={
                 <div class="config-empty">No targets configured</div>
               }>
