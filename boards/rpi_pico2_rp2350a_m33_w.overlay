@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include <raspberrypi/partitions_4M_storage.dtsi>
-#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
 	chosen {
@@ -10,19 +10,13 @@
 
 	servo: servo {
 		compatible = "pwm-servo";
-		pwms = <&pwm 2 20000000 PWM_POLARITY_NORMAL>;
+		pwms = <&servo_pio 0 20000000 0>;
 		min-pulse = <500000>;
 		max-pulse = <2500000>;
 	};
 };
 
 &pinctrl {
-	pwm_servo_default: pwm_servo_default {
-		group1 {
-			pinmux = <PWM_1A_P2>;
-		};
-	};
-
 	spi0_max6675: spi0_max6675 {
 		group1 {
 			pinmux = <SPI0_SCK_P18>, <SPI0_TX_P19>;
@@ -34,10 +28,15 @@
 	};
 };
 
-&pwm {
-	pinctrl-0 = <&pwm_servo_default>;
-	pinctrl-names = "default";
+&pio1 {
 	status = "okay";
+
+	servo_pio: servo-pwm {
+		compatible = "raspberrypi,pico-pwm-servo-pio";
+		gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+		#pwm-cells = <3>;
+		status = "okay";
+	};
 };
 
 &spi0 {
