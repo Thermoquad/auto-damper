@@ -53,6 +53,34 @@ struct damper_data {
 ZBUS_CHAN_DECLARE(damper_data_chan);
 
 //////////////////////////////////////////////////////////////
+// Heater Command Channel
+//////////////////////////////////////////////////////////////
+
+enum heater_cmd_type {
+  HEATER_CMD_SCAN,
+  HEATER_CMD_CONNECT,
+  HEATER_CMD_DISCONNECT,
+  HEATER_CMD_POWER,
+  HEATER_CMD_SET_MODE,
+  HEATER_CMD_SET_TEMP,
+  HEATER_CMD_ADJUST_POWER,
+};
+
+struct heater_command {
+  enum heater_cmd_type type;
+  union {
+    int scan_timeout;
+    int connect_index;
+    bool power_on;
+    enum heater_run_mode mode;
+    int temp;
+    int power_delta;
+  };
+};
+
+ZBUS_CHAN_DECLARE(heater_command_chan);
+
+//////////////////////////////////////////////////////////////
 // Heater Data Channel
 //////////////////////////////////////////////////////////////
 

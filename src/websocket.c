@@ -21,18 +21,12 @@
 LOG_MODULE_REGISTER(websocket, LOG_LEVEL_INF);
 
 //////////////////////////////////////////////////////////////
-// BLE Externs (from heater_ble.c)
+// BLE Externs (read-only data access from heater_ble.c)
 //////////////////////////////////////////////////////////////
 
-extern int heater_ble_scan(int timeout_sec);
 extern int heater_ble_scan_stop(void);
-extern int heater_ble_connect(int index);
-extern int heater_ble_disconnect(void);
 extern bool heater_ble_is_connected(void);
 extern int heater_ble_get_scan_count(void);
-extern int heater_ble_send_power(bool on);
-extern int heater_ble_send_set_temp(int temp_c);
-extern int heater_ble_send_set_mode(enum heater_run_mode mode);
 
 struct ble_scan_result {
   bt_addr_le_t addr;
@@ -443,15 +437,8 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     int timeout = 5;
     ws_json_get_int(msg, "timeout", &timeout);
     if (timeout < 1 || timeout > 30) timeout = 5;
-    int err = heater_ble_scan(timeout);
-    if (err == -EALREADY) {
-      ws_send_result(slot, false, "already scanning");
-      return;
-    }
-    if (err) {
-      ws_send_result(slot, false, "scan failed");
-      return;
-    }
+    struct heater_command cmd = {.type = HEATER_CMD_SCAN, .scan_timeout = timeout};
+    zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "heaters.list") == 0) {
@@ -482,27 +469,13 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       ws_send_result(slot, false, "heater not found");
       return;
     }
-    if (heater_ble_is_connected()) {
-      ws_send_result(slot, false, "already connected");
-      return;
-    }
-    int err = heater_ble_connect(idx);
-    if (err) {
-      ws_send_result(slot, false, "connect failed");
-      return;
-    }
+    struct heater_command cmd = {.type = HEATER_CMD_CONNECT, .connect_index = idx};
+    zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "heaters.disconnect") == 0) {
-    if (!heater_ble_is_connected()) {
-      ws_send_result(slot, false, "not connected");
-      return;
-    }
-    int err = heater_ble_disconnect();
-    if (err) {
-      ws_send_result(slot, false, "disconnect failed");
-      return;
-    }
+    struct heater_command cmd = {.type = HEATER_CMD_DISCONNECT};
+    zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "heater.command") == 0) {
@@ -514,31 +487,32 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     bool power_val;
     int int_val;
     char mode_str[16];
+    struct heater_command cmd;
 
     if (ws_json_get_bool(msg, "power", &power_val)) {
-      int err = heater_ble_send_power(power_val);
-      if (err == -ENOTSUP) { ws_send_result(slot, false, "not supported"); return; }
-      if (err) { ws_send_result(slot, false, "send failed"); return; }
+      cmd.type = HEATER_CMD_POWER;
+      cmd.power_on = power_val;
     } else if (ws_json_get_string(msg, "mode", mode_str, sizeof(mode_str))) {
-      enum heater_run_mode mode;
-      if (strcmp(mode_str, "manual") == 0) mode = HEATER_MODE_MANUAL;
-      else if (strcmp(mode_str, "automatic") == 0) mode = HEATER_MODE_AUTOMATIC;
-      else if (strcmp(mode_str, "fan") == 0) mode = HEATER_MODE_FAN;
+      cmd.type = HEATER_CMD_SET_MODE;
+      if (strcmp(mode_str, "manual") == 0) cmd.mode = HEATER_MODE_MANUAL;
+      else if (strcmp(mode_str, "automatic") == 0) cmd.mode = HEATER_MODE_AUTOMATIC;
+      else if (strcmp(mode_str, "fan") == 0) cmd.mode = HEATER_MODE_FAN;
       else { ws_send_result(slot, false, "invalid mode"); return; }
-      int err = heater_ble_send_set_mode(mode);
-      if (err == -ENOTSUP) { ws_send_result(slot, false, "not supported"); return; }
-      if (err) { ws_send_result(slot, false, "send failed"); return; }
     } else if (ws_json_get_int(msg, "temp", &int_val)) {
       if (int_val < 8 || int_val > 36) {
         ws_send_result(slot, false, "temp must be 8-36");
         return;
       }
-      int err = heater_ble_send_set_temp(int_val);
-      if (err) { ws_send_result(slot, false, "send failed"); return; }
+      cmd.type = HEATER_CMD_SET_TEMP;
+      cmd.temp = int_val;
+    } else if (ws_json_get_int(msg, "power_level", &int_val)) {
+      cmd.type = HEATER_CMD_ADJUST_POWER;
+      cmd.power_delta = int_val;
     } else {
-      ws_send_result(slot, false, "need power, mode, or temp");
+      ws_send_result(slot, false, "need power, mode, temp, or power_level");
       return;
     }
+    zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
   } else {

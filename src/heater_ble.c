@@ -87,6 +87,13 @@ ZBUS_CHAN_DEFINE(heater_data_chan, struct heater_data, NULL, NULL,
                               .step = HEATER_STEP_IDLE, .connected = false,
                               .timestamp_us = 0));
 
+static void heater_cmd_callback(const struct zbus_channel *chan);
+ZBUS_LISTENER_DEFINE(heater_cmd_listener, heater_cmd_callback);
+
+ZBUS_CHAN_DEFINE(heater_command_chan, struct heater_command, NULL, NULL,
+                ZBUS_OBSERVERS(heater_cmd_listener),
+                ZBUS_MSG_INIT(.type = HEATER_CMD_DISCONNECT));
+
 //////////////////////////////////////////////////////////////
 // Heartbeat
 //////////////////////////////////////////////////////////////
@@ -645,6 +652,26 @@ int heater_ble_send_set_temp(int temp_c)
                                         pkt_len, false);
 }
 
+int heater_ble_send_adjust_power(int delta)
+{
+  if (!heater_conn || !active_protocol || write_handle == 0) {
+    return -ENOTCONN;
+  }
+
+  if (!active_protocol->encode_adjust_power) {
+    return -ENOTSUP;
+  }
+
+  uint8_t buf[16];
+  int pkt_len = active_protocol->encode_adjust_power(buf, sizeof(buf), delta);
+
+  if (pkt_len < 0) {
+    return pkt_len;
+  }
+  return bt_gatt_write_without_response(heater_conn, write_handle, buf,
+                                        pkt_len, false);
+}
+
 int heater_ble_send_set_mode(enum heater_run_mode mode)
 {
   if (!heater_conn || !active_protocol || write_handle == 0) {
@@ -664,6 +691,43 @@ int heater_ble_send_set_mode(enum heater_run_mode mode)
   return bt_gatt_write_without_response(heater_conn, write_handle, buf,
                                         pkt_len, false);
 }
+
+//////////////////////////////////////////////////////////////
+// Zbus Command Listener
+//////////////////////////////////////////////////////////////
+
+static void heater_cmd_callback(const struct zbus_channel *chan)
+{
+  const struct heater_command *cmd = zbus_chan_const_msg(chan);
+
+  switch (cmd->type) {
+  case HEATER_CMD_SCAN:
+    heater_ble_scan(cmd->scan_timeout);
+    break;
+  case HEATER_CMD_CONNECT:
+    heater_ble_connect(cmd->connect_index);
+    break;
+  case HEATER_CMD_DISCONNECT:
+    heater_ble_disconnect();
+    break;
+  case HEATER_CMD_POWER:
+    heater_ble_send_power(cmd->power_on);
+    break;
+  case HEATER_CMD_SET_MODE:
+    heater_ble_send_set_mode(cmd->mode);
+    break;
+  case HEATER_CMD_SET_TEMP:
+    heater_ble_send_set_temp(cmd->temp);
+    break;
+  case HEATER_CMD_ADJUST_POWER:
+    heater_ble_send_adjust_power(cmd->power_delta);
+    break;
+  }
+}
+
+//////////////////////////////////////////////////////////////
+// String Helpers
+//////////////////////////////////////////////////////////////
 
 const char *heater_power_state_str(enum heater_power_state s)
 {
