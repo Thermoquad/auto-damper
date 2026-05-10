@@ -138,5 +138,8 @@ int main(void)
   positions_init();
   targets_init();
 
+  struct heater_command cmd = {.type = HEATER_CMD_SCAN, .scan_timeout = 5};
+  zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(500));
+
   return 0;
 }

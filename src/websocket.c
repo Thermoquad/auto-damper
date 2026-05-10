@@ -97,6 +97,7 @@ ZBUS_SUBSCRIBER_DEFINE(ws_sub, 8);
 ZBUS_CHAN_ADD_OBS(temperature_data_chan, ws_sub, 5);
 ZBUS_CHAN_ADD_OBS(damper_data_chan, ws_sub, 5);
 ZBUS_CHAN_ADD_OBS(heater_data_chan, ws_sub, 5);
+ZBUS_CHAN_ADD_OBS(heater_devices_chan, ws_sub, 5);
 
 #define WS_SUB_STACK_SIZE 2048
 #define WS_SUB_PRIORITY 7
@@ -157,6 +158,20 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           data.voltage, data.target_temp,
           data.power_level, data.error_code,
           data.connected ? "true" : "false");
+    } else if (chan == &heater_devices_chan) {
+      struct heater_devices devs;
+      zbus_chan_read(chan, &devs, K_NO_WAIT);
+      len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
+          "{\"type\":\"heaters\",\"connected\":%d,\"devices\":[",
+          devs.connected_index);
+      for (int i = 0; i < devs.count && len < (int)sizeof(ws_tx_buf) - 80; i++) {
+        if (i > 0) ws_tx_buf[len++] = ',';
+        len += snprintf(ws_tx_buf + len, sizeof(ws_tx_buf) - len,
+            "{\"name\":\"%s\",\"rssi\":%d,\"protocol\":\"%s\"}",
+            devs.devices[i].name, devs.devices[i].rssi,
+            devs.devices[i].protocol);
+      }
+      len += snprintf(ws_tx_buf + len, sizeof(ws_tx_buf) - len, "]}");
     }
 
     if (len > 0) {
