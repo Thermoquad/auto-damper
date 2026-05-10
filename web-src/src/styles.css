@@ -185,3 +185,105 @@ body {
   min-width: 4ch;
   text-align: center;
 }
+
+/* Damper Angle Controls */
+.damper-angle-controls {
+  flex-direction: column;
+  gap: var(--void-space-3);
+}
+
+.angle-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-3);
+  width: 100%;
+}
+
+.angle-slider {
+  flex: 1;
+  height: 6px;
+  accent-color: var(--void-color-info, #3b82f6);
+}
+
+.angle-input {
+  width: 5.5rem;
+  padding: var(--void-space-2) var(--void-space-3);
+  border: 1px solid var(--void-color-border);
+  border-radius: var(--void-radius-md);
+  background: var(--void-color-bg);
+  color: var(--void-color-text);
+  font-family: var(--void-font-mono);
+  font-size: var(--void-text-sm);
+  text-align: right;
+}
+
+/* Config Section */
+.config-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--void-space-5);
+}
+
+.config-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--void-space-3);
+}
+
+.config-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-2);
+}
+
+.config-label-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--void-space-2) var(--void-space-3);
+  border: 1px solid var(--void-color-border);
+  border-radius: var(--void-radius-md);
+  background: var(--void-color-bg);
+  color: var(--void-color-text);
+  font-size: var(--void-text-sm);
+}
+
+.config-angle-input,
+.config-temp-input {
+  width: 4.5rem;
+  padding: var(--void-space-2) var(--void-space-3);
+  border: 1px solid var(--void-color-border);
+  border-radius: var(--void-radius-md);
+  background: var(--void-color-bg);
+  color: var(--void-color-text);
+  font-family: var(--void-font-mono);
+  font-size: var(--void-text-sm);
+  text-align: right;
+}
+
+.config-unit,
+.config-separator {
+  font-size: var(--void-text-sm);
+  color: var(--void-color-text-muted);
+  white-space: nowrap;
+}
+
+.config-pos-select {
+  padding: var(--void-space-2) var(--void-space-3);
+  border: 1px solid var(--void-color-border);
+  border-radius: var(--void-radius-md);
+  background: var(--void-color-bg);
+  color: var(--void-color-text);
+  font-size: var(--void-text-sm);
+}
+
+.config-empty {
+  font-size: var(--void-text-sm);
+  color: var(--void-color-text-muted);
+  font-style: italic;
+}
