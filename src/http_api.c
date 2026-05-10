@@ -4,7 +4,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/http/server.h>
 #include <zephyr/net/http/service.h>
-#include <zephyr/bluetooth/addr.h>
 #include <zephyr/zbus/zbus.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,33 +17,6 @@
 #include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(http_api, LOG_LEVEL_INF);
-
-//////////////////////////////////////////////////////////////
-// BLE Externs (from heater_ble.c)
-//////////////////////////////////////////////////////////////
-
-extern int heater_ble_scan(int timeout_sec);
-extern int heater_ble_scan_stop(void);
-extern int heater_ble_connect(int index);
-extern int heater_ble_disconnect(void);
-extern void heater_ble_set_protocol(const struct heater_protocol *proto);
-extern const struct heater_protocol *heater_ble_get_protocol(void);
-extern bool heater_ble_is_connected(void);
-extern bool heater_ble_is_scanning(void);
-extern int heater_ble_get_scan_count(void);
-extern int heater_ble_send_power(bool on);
-extern int heater_ble_send_set_temp(int temp_c);
-extern int heater_ble_send_set_mode(enum heater_run_mode mode);
-
-struct ble_scan_result {
-  bt_addr_le_t addr;
-  char name[32];
-  int8_t rssi;
-  const struct heater_protocol *protocol;
-};
-
-extern const struct ble_scan_result *heater_ble_get_scan_result(int index);
-extern int heater_ble_get_connected_index(void);
 
 //////////////////////////////////////////////////////////////
 // Config
@@ -565,10 +537,10 @@ static char heater_body[BODY_BUF_SIZE];
 
 static int find_heater_by_name(const char *name)
 {
-  int count = heater_ble_get_scan_count();
-  for (int i = 0; i < count; i++) {
-    const struct ble_scan_result *r = heater_ble_get_scan_result(i);
-    if (strcmp(r->name, name) == 0) {
+  struct heater_devices devs;
+  zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
+  for (int i = 0; i < devs.count; i++) {
+    if (strcmp(devs.devices[i].name, name) == 0) {
       return i;
     }
   }
@@ -588,13 +560,8 @@ static int heaters_scan(const struct http_request_ctx *req,
     if (timeout < 1 || timeout > 30) timeout = 5;
   }
 
-  int err = heater_ble_scan(timeout);
-  if (err == -EALREADY) {
-    return send_error(rsp, heaters_buf, 400, "already scanning");
-  }
-  if (err) {
-    return send_error(rsp, heaters_buf, 500, "scan failed");
-  }
+  struct heater_command cmd = {.type = HEATER_CMD_SCAN, .scan_timeout = timeout};
+  zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
 
   int len = snprintf(heaters_buf, sizeof(heaters_buf),
                      "{\"ok\":true,\"timeout\":%d}", timeout);
@@ -603,24 +570,20 @@ static int heaters_scan(const struct http_request_ctx *req,
 
 static int heaters_list(struct http_response_ctx *rsp)
 {
-  heater_ble_scan_stop();
-  int count = heater_ble_get_scan_count();
-  int connected_idx = heater_ble_get_connected_index();
+  struct heater_devices devs;
+  zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
 
   int off = snprintf(heaters_buf, sizeof(heaters_buf),
                      "{\"heaters\":[");
 
-  for (int i = 0; i < count && off < (int)sizeof(heaters_buf) - 120; i++) {
-    const struct ble_scan_result *r = heater_ble_get_scan_result(i);
-    char addr_str[BT_ADDR_LE_STR_LEN];
-    bt_addr_le_to_str(&r->addr, addr_str, sizeof(addr_str));
-
+  for (int i = 0; i < devs.count && off < (int)sizeof(heaters_buf) - 100; i++) {
     off += snprintf(heaters_buf + off, sizeof(heaters_buf) - off,
-        "%s{\"name\":\"%s\",\"addr\":\"%s\",\"rssi\":%d,"
+        "%s{\"name\":\"%s\",\"rssi\":%d,"
         "\"protocol\":\"%s\",\"connected\":%s}",
-        i > 0 ? "," : "", r->name, addr_str, r->rssi,
-        r->protocol ? r->protocol->name : "unknown",
-        i == connected_idx ? "true" : "false");
+        i > 0 ? "," : "",
+        devs.devices[i].name, devs.devices[i].rssi,
+        devs.devices[i].protocol,
+        i == devs.connected_index ? "true" : "false");
   }
 
   off += snprintf(heaters_buf + off, sizeof(heaters_buf) - off, "]}");
@@ -636,20 +599,20 @@ static int heater_item(const char *url, enum http_method method,
     return send_error(rsp, heater_buf, 400, "missing heater name");
   }
 
+  struct heater_devices devs;
+  zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
+
   int idx = find_heater_by_name(name);
-  int connected_idx = heater_ble_get_connected_index();
+  bool is_connected = (idx >= 0 && idx == devs.connected_index);
 
   if (method == HTTP_GET) {
     if (idx < 0) {
       return send_error(rsp, heater_buf, 404, "heater not found");
     }
 
-    const struct ble_scan_result *r = heater_ble_get_scan_result(idx);
-    bool connected = (idx == connected_idx);
-
-    if (connected) {
+    if (is_connected) {
       struct heater_data hdata = {0};
-      zbus_chan_read(&heater_data_chan, &hdata, K_MSEC(100));
+      zbus_chan_read(&heater_data_chan, &hdata, K_NO_WAIT);
 
       int len = snprintf(heater_buf, sizeof(heater_buf),
           "{\"name\":\"%s\",\"protocol\":\"%s\",\"connected\":true,"
@@ -658,7 +621,7 @@ static int heater_item(const char *url, enum http_method method,
           "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
           "\"power_level\":%d,\"error\":%d}}",
-          r->name, r->protocol ? r->protocol->name : "unknown",
+          devs.devices[idx].name, devs.devices[idx].protocol,
           heater_power_state_str(hdata.power),
           heater_run_step_str(hdata.step),
           heater_run_mode_str(hdata.mode),
@@ -670,7 +633,7 @@ static int heater_item(const char *url, enum http_method method,
 
     int len = snprintf(heater_buf, sizeof(heater_buf),
         "{\"name\":\"%s\",\"protocol\":\"%s\",\"connected\":false}",
-        r->name, r->protocol ? r->protocol->name : "unknown");
+        devs.devices[idx].name, devs.devices[idx].protocol);
     return send_json(rsp, heater_buf, len);
   }
 
@@ -678,14 +641,12 @@ static int heater_item(const char *url, enum http_method method,
     if (idx < 0) {
       return send_error(rsp, heater_buf, 404, "heater not found");
     }
-    if (heater_ble_is_connected()) {
+    if (devs.connected_index >= 0) {
       return send_error(rsp, heater_buf, 409, "already connected");
     }
 
-    int err = heater_ble_connect(idx);
-    if (err) {
-      return send_error(rsp, heater_buf, 500, "connect failed");
-    }
+    struct heater_command cmd = {.type = HEATER_CMD_CONNECT, .connect_index = idx};
+    zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
 
     int len = snprintf(heater_buf, sizeof(heater_buf),
                        "{\"ok\":true,\"name\":\"%s\"}", name);
@@ -693,18 +654,16 @@ static int heater_item(const char *url, enum http_method method,
   }
 
   if (method == HTTP_DELETE) {
-    if (!heater_ble_is_connected() || idx != connected_idx) {
+    if (!is_connected) {
       return send_error(rsp, heater_buf, 400, "not connected to this heater");
     }
-    int err = heater_ble_disconnect();
-    if (err) {
-      return send_error(rsp, heater_buf, 500, "disconnect failed");
-    }
+    struct heater_command cmd = {.type = HEATER_CMD_DISCONNECT};
+    zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
     return send_ok(rsp, heater_buf);
   }
 
   if (method == HTTP_PATCH) {
-    if (!heater_ble_is_connected() || idx != connected_idx) {
+    if (!is_connected) {
       return send_error(rsp, heater_buf, 400, "not connected to this heater");
     }
     if (parse_body(req, heater_body, sizeof(heater_body)) < 0) {
@@ -714,51 +673,33 @@ static int heater_item(const char *url, enum http_method method,
     bool power_val;
     int int_val;
     char mode_str[16];
+    struct heater_command cmd;
 
     if (json_get_bool(heater_body, "power", &power_val)) {
-      int err = heater_ble_send_power(power_val);
-      if (err == -ENOTSUP) {
-        return send_error(rsp, heater_buf, 501, "not supported");
-      }
-      if (err) {
-        return send_error(rsp, heater_buf, 500, "send failed");
-      }
+      cmd.type = HEATER_CMD_POWER;
+      cmd.power_on = power_val;
     } else if (json_get_string(heater_body, "mode", mode_str,
                                sizeof(mode_str))) {
-      enum heater_run_mode mode;
-      if (strcmp(mode_str, "manual") == 0) mode = HEATER_MODE_MANUAL;
-      else if (strcmp(mode_str, "automatic") == 0) mode = HEATER_MODE_AUTOMATIC;
-      else if (strcmp(mode_str, "fan") == 0) mode = HEATER_MODE_FAN;
+      cmd.type = HEATER_CMD_SET_MODE;
+      if (strcmp(mode_str, "manual") == 0) cmd.mode = HEATER_MODE_MANUAL;
+      else if (strcmp(mode_str, "automatic") == 0) cmd.mode = HEATER_MODE_AUTOMATIC;
+      else if (strcmp(mode_str, "fan") == 0) cmd.mode = HEATER_MODE_FAN;
       else return send_error(rsp, heater_buf, 400, "invalid mode");
-
-      int err = heater_ble_send_set_mode(mode);
-      if (err == -ENOTSUP) {
-        return send_error(rsp, heater_buf, 501, "not supported");
-      }
-      if (err) {
-        return send_error(rsp, heater_buf, 500, "send failed");
-      }
     } else if (json_get_int(heater_body, "temp", &int_val)) {
       if (int_val < 8 || int_val > 36) {
         return send_error(rsp, heater_buf, 400, "temp must be 8-36");
       }
-      int err = heater_ble_send_set_temp(int_val);
-      if (err) {
-        return send_error(rsp, heater_buf, 500, "send failed");
-      }
+      cmd.type = HEATER_CMD_SET_TEMP;
+      cmd.temp = int_val;
     } else if (json_get_int(heater_body, "power_level", &int_val)) {
-      if (int_val < 1 || int_val > 10) {
-        return send_error(rsp, heater_buf, 400, "power_level must be 1-10");
-      }
-      int err = heater_ble_send_set_temp(int_val);
-      if (err) {
-        return send_error(rsp, heater_buf, 500, "send failed");
-      }
+      cmd.type = HEATER_CMD_ADJUST_POWER;
+      cmd.power_delta = int_val;
     } else {
       return send_error(rsp, heater_buf, 400,
                         "need power, mode, temp, or power_level");
     }
 
+    zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
     return send_ok(rsp, heater_buf);
   }
 

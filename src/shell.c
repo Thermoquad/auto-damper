@@ -11,7 +11,6 @@
 #include <auto_damper/positions.h>
 #include <auto_damper/targets.h>
 #include <auto_damper/zbus.h>
-#include <zephyr/bluetooth/addr.h>
 #include <auto_damper/heater.h>
 #include <auto_damper/wifi.h>
 #include <auto_damper/wifi_config.h>
@@ -22,29 +21,11 @@
 #include <whd_thread.h>
 
 extern int heater_ble_init(void);
-extern int heater_ble_scan(int timeout_sec);
-extern int heater_ble_scan_stop(void);
-extern int heater_ble_connect(int index);
-extern int heater_ble_disconnect(void);
 extern void heater_ble_set_protocol(const struct heater_protocol *proto);
 extern const struct heater_protocol *heater_ble_get_protocol(void);
 extern void cyw43_sbus_rx_set_paused(bool paused);
 extern void cyw43_sbus_dump_whd_diag(void (*pr)(const char *fmt, ...) );
 extern whd_interface_t airoc_wifi_get_whd_interface(void);
-extern bool heater_ble_is_connected(void);
-extern bool heater_ble_is_scanning(void);
-extern int heater_ble_get_scan_count(void);
-extern int heater_ble_send_power(bool on);
-extern int heater_ble_send_set_temp(int temp_c);
-
-struct ble_scan_result {
-  bt_addr_le_t addr;
-  char name[32];
-  int8_t rssi;
-  const struct heater_protocol *protocol;
-};
-
-extern const struct ble_scan_result *heater_ble_get_scan_result(int index);
 
 #define PUB_TIMEOUT K_MSEC(100)
 
@@ -174,16 +155,10 @@ static int cmd_ble_scan(const struct shell *sh, size_t argc, char **argv)
     }
   }
 
-  int err = heater_ble_scan(timeout);
-
-  if (err == -EALREADY) {
-    shell_warn(sh, "Already scanning");
-  } else if (err) {
-    shell_error(sh, "Scan failed: %d", err);
-  } else {
-    shell_print(sh, "Scanning for %d seconds...", timeout);
-  }
-  return err;
+  struct heater_command cmd = {.type = HEATER_CMD_SCAN, .scan_timeout = timeout};
+  zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
+  shell_print(sh, "Scanning for %d seconds...", timeout);
+  return 0;
 }
 
 //////////////////////////////////////////////////////////////
@@ -195,16 +170,19 @@ static int cmd_ble_stop(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
 
-  heater_ble_scan_stop();
-  shell_print(sh, "Scan stopped, %d device(s) found",
-              heater_ble_get_scan_count());
+  struct heater_command cmd = {.type = HEATER_CMD_SCAN_STOP};
+  zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
 
-  for (int i = 0; i < heater_ble_get_scan_count(); i++) {
-    const struct ble_scan_result *r = heater_ble_get_scan_result(i);
-    char addr_str[BT_ADDR_LE_STR_LEN];
-    bt_addr_le_to_str(&r->addr, addr_str, sizeof(addr_str));
-    shell_print(sh, "  [%d] %s \"%s\" RSSI %d (%s)", i, addr_str, r->name,
-                r->rssi, r->protocol ? r->protocol->name : "unknown");
+  k_sleep(K_MSEC(100));
+
+  struct heater_devices devs;
+  zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
+
+  shell_print(sh, "Scan stopped, %d device(s) found", devs.count);
+  for (int i = 0; i < devs.count; i++) {
+    shell_print(sh, "  [%d] \"%s\" RSSI %d (%s)", i,
+                devs.devices[i].name, devs.devices[i].rssi,
+                devs.devices[i].protocol);
   }
   return 0;
 }
@@ -221,18 +199,19 @@ static int cmd_ble_connect(const struct shell *sh, size_t argc, char **argv)
   }
 
   int index = atoi(argv[1]);
-  int err = heater_ble_connect(index);
 
-  if (err == -EALREADY) {
-    shell_warn(sh, "Already connected");
-  } else if (err == -EINVAL) {
-    shell_error(sh, "Invalid index (0-%d)", heater_ble_get_scan_count() - 1);
-  } else if (err) {
-    shell_error(sh, "Connect failed: %d", err);
-  } else {
-    shell_print(sh, "Connecting...");
+  struct heater_devices devs;
+  zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
+
+  if (index < 0 || index >= devs.count) {
+    shell_error(sh, "Invalid index (0-%d)", devs.count - 1);
+    return -EINVAL;
   }
-  return err;
+
+  struct heater_command cmd = {.type = HEATER_CMD_CONNECT, .connect_index = index};
+  zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
+  shell_print(sh, "Connecting to \"%s\"...", devs.devices[index].name);
+  return 0;
 }
 
 //////////////////////////////////////////////////////////////
@@ -244,16 +223,10 @@ static int cmd_ble_disconnect(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
 
-  int err = heater_ble_disconnect();
-
-  if (err == -ENOTCONN) {
-    shell_warn(sh, "Not connected");
-  } else if (err) {
-    shell_error(sh, "Disconnect failed: %d", err);
-  } else {
-    shell_print(sh, "Disconnecting...");
-  }
-  return err;
+  struct heater_command cmd = {.type = HEATER_CMD_DISCONNECT};
+  zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
+  shell_print(sh, "Disconnecting...");
+  return 0;
 }
 
 //////////////////////////////////////////////////////////////
@@ -294,33 +267,30 @@ static int cmd_ble_status(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
 
+  struct heater_data hdata;
+  zbus_chan_read(&heater_data_chan, &hdata, K_NO_WAIT);
+
+  struct heater_devices devs;
+  zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
+
   const struct heater_protocol *p = heater_ble_get_protocol();
 
   shell_print(sh, "BLE Status:");
-  shell_print(sh, "  Connected:    %s",
-              heater_ble_is_connected() ? "yes" : "no");
+  shell_print(sh, "  Connected:    %s", hdata.connected ? "yes" : "no");
   shell_print(sh, "  Protocol:     %s", p ? p->name : "none");
-  shell_print(sh, "  Scanning:     %s",
-              heater_ble_is_scanning() ? "yes" : "no");
+  shell_print(sh, "  Devices:      %d scanned", devs.count);
 
-  if (!heater_ble_is_connected()) {
+  if (!hdata.connected) {
     return 0;
   }
 
-  struct heater_data hdata;
-  int ret = zbus_chan_read(&heater_data_chan, &hdata, K_MSEC(100));
-
-  if (ret) {
-    shell_warn(sh, "  No telemetry data");
-    return 0;
-  }
-
+  shell_print(sh, "  Name:         %s", hdata.name);
   shell_print(sh, "Heater Telemetry:");
   shell_print(sh, "  Power:        %s",
               heater_power_state_str(hdata.power));
   shell_print(sh, "  Step:         %s",
               heater_run_step_str(hdata.step));
-  shell_print(sh, "  Exhaust:      %.1f C", hdata.exhaust_temp_c);
+  shell_print(sh, "  Core:         %.1f C", hdata.exhaust_temp_c);
   shell_print(sh, "  Ambient:      %.1f C", hdata.ambient_temp_c);
   shell_print(sh, "  Voltage:      %.1f V", hdata.voltage);
   shell_print(sh, "  Mode:         %s",
@@ -474,10 +444,8 @@ static int cmd_test_wifi_ble(const struct shell *sh, size_t argc, char **argv)
 
   /* Step 4: BLE scan */
   shell_print(sh, "\n[4] Starting BLE scan (5s)...");
-  int rc = heater_ble_scan(5);
-  if (rc) {
-    shell_error(sh, "  BLE scan failed: %d", rc);
-  }
+  struct heater_command scan_cmd = {.type = HEATER_CMD_SCAN, .scan_timeout = 5};
+  zbus_chan_pub(&heater_command_chan, &scan_cmd, PUB_TIMEOUT);
   k_sleep(K_SECONDS(6));
 
   /* Step 5: WHD state after BLE */

@@ -10,8 +10,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include <zephyr/bluetooth/addr.h>
-
 #include <auto_damper/damper.h>
 #include <auto_damper/heater.h>
 #include <auto_damper/positions.h>
@@ -19,25 +17,6 @@
 #include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(websocket, LOG_LEVEL_INF);
-
-//////////////////////////////////////////////////////////////
-// BLE Externs (read-only data access from heater_ble.c)
-//////////////////////////////////////////////////////////////
-
-extern int heater_ble_scan_stop(void);
-extern bool heater_ble_is_connected(void);
-extern int heater_ble_get_scan_count(void);
-
-struct ble_scan_result {
-  bt_addr_le_t addr;
-  char name[32];
-  int8_t rssi;
-  const struct heater_protocol *protocol;
-};
-
-extern const struct ble_scan_result *heater_ble_get_scan_result(int index);
-extern int heater_ble_get_connected_index(void);
-extern const char *heater_ble_get_connected_name(void);
 
 //////////////////////////////////////////////////////////////
 // HTTP Service (defined in http_api.c)
@@ -161,7 +140,6 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
     } else if (chan == &heater_data_chan) {
       struct heater_data data;
       zbus_chan_read(chan, &data, K_NO_WAIT);
-      const char *name = heater_ble_get_connected_name();
       len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
           "{\"type\":\"heater\","
           "\"name\":%s%s%s,"
@@ -169,7 +147,9 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
           "\"power_level\":%d,\"error\":%d,\"connected\":%s}",
-          name ? "\"" : "", name ? name : "null", name ? "\"" : "",
+          data.name[0] ? "\"" : "",
+          data.name[0] ? data.name : "null",
+          data.name[0] ? "\"" : "",
           heater_power_state_str(data.power),
           heater_run_step_str(data.step),
           heater_run_mode_str(data.mode),
@@ -287,10 +267,10 @@ static void ws_send_result(int slot, bool ok, const char *error)
 
 static int find_heater_by_name(const char *name)
 {
-  int count = heater_ble_get_scan_count();
-  for (int i = 0; i < count; i++) {
-    const struct ble_scan_result *r = heater_ble_get_scan_result(i);
-    if (strcmp(r->name, name) == 0) {
+  struct heater_devices devs;
+  zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
+  for (int i = 0; i < devs.count; i++) {
+    if (strcmp(devs.devices[i].name, name) == 0) {
       return i;
     }
   }
@@ -442,17 +422,17 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "heaters.list") == 0) {
-    int count = heater_ble_get_scan_count();
-    int connected_idx = heater_ble_get_connected_index();
+    struct heater_devices devs;
+    zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
     int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
-        "{\"type\":\"heaters\",\"connected\":%d,\"devices\":[", connected_idx);
-    for (int i = 0; i < count && len < (int)sizeof(ws_cmd_buf) - 80; i++) {
-      const struct ble_scan_result *r = heater_ble_get_scan_result(i);
-      if (!r) continue;
+        "{\"type\":\"heaters\",\"connected\":%d,\"devices\":[",
+        devs.connected_index);
+    for (int i = 0; i < devs.count && len < (int)sizeof(ws_cmd_buf) - 80; i++) {
       if (i > 0) ws_cmd_buf[len++] = ',';
       len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len,
           "{\"name\":\"%s\",\"rssi\":%d,\"protocol\":\"%s\"}",
-          r->name, r->rssi, r->protocol ? r->protocol->name : "unknown");
+          devs.devices[i].name, devs.devices[i].rssi,
+          devs.devices[i].protocol);
     }
     len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len, "]}");
     ws_send_to(slot, ws_cmd_buf, len);
@@ -479,7 +459,9 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "heater.command") == 0) {
-    if (!heater_ble_is_connected()) {
+    struct heater_data hstate;
+    zbus_chan_read(&heater_data_chan, &hstate, K_NO_WAIT);
+    if (!hstate.connected) {
       ws_send_result(slot, false, "not connected");
       return;
     }
