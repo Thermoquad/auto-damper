@@ -542,6 +542,25 @@ bool heater_ble_is_scanning(void)
   return scanning;
 }
 
+int heater_ble_get_connected_index(void)
+{
+  if (!heater_conn) {
+    return -1;
+  }
+
+  struct bt_conn_info info;
+  if (bt_conn_get_info(heater_conn, &info) < 0) {
+    return -1;
+  }
+
+  for (int i = 0; i < scan_count; i++) {
+    if (bt_addr_le_cmp(&scan_results[i].addr, info.le.dst) == 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 int heater_ble_send_power(bool on)
 {
   if (!heater_conn || !active_protocol || write_handle == 0) {

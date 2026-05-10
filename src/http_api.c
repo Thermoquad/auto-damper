@@ -12,13 +12,15 @@
 
 #include <auto_damper/damper.h>
 #include <auto_damper/heater.h>
+#include <auto_damper/positions.h>
+#include <auto_damper/targets.h>
 #include <auto_damper/wifi.h>
 #include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(http_api, LOG_LEVEL_INF);
 
 //////////////////////////////////////////////////////////////
-// BLE Externs (from heater_ble.c and shell.c)
+// BLE Externs (from heater_ble.c)
 //////////////////////////////////////////////////////////////
 
 extern int heater_ble_scan(int timeout_sec);
@@ -42,13 +44,14 @@ struct ble_scan_result {
 };
 
 extern const struct ble_scan_result *heater_ble_get_scan_result(int index);
+extern int heater_ble_get_connected_index(void);
 
 //////////////////////////////////////////////////////////////
 // Config
 //////////////////////////////////////////////////////////////
 
-#define JSON_BUF_SIZE 384
-#define BODY_BUF_SIZE 96
+#define JSON_BUF_SIZE 512
+#define BODY_BUF_SIZE 128
 #define PUB_TIMEOUT K_MSEC(100)
 
 //////////////////////////////////////////////////////////////
@@ -64,7 +67,7 @@ HTTP_SERVICE_DEFINE(damper_http_service, NULL, &http_port,
                     CONFIG_HTTP_SERVER_MAX_CLIENTS, 10, NULL, NULL, NULL);
 
 //////////////////////////////////////////////////////////////
-// JSON Response Helpers
+// JSON Helpers
 //////////////////////////////////////////////////////////////
 
 static int send_json(struct http_response_ctx *rsp, char *buf, int len)
@@ -77,85 +80,435 @@ static int send_json(struct http_response_ctx *rsp, char *buf, int len)
   return 0;
 }
 
-static int send_json_error(struct http_response_ctx *rsp, char *buf,
-                           int status_code, const char *message)
+static int send_json_status(struct http_response_ctx *rsp, char *buf,
+                            int len, int status_code)
 {
-  int len = snprintf(buf, JSON_BUF_SIZE,
-                     "{\"error\":\"%s\"}", message);
   rsp->body = (const uint8_t *)buf;
   rsp->body_len = len;
   rsp->final_chunk = true;
-  rsp->status = status_code == 400 ? HTTP_400_BAD_REQUEST : HTTP_500_INTERNAL_SERVER_ERROR;
   rsp->header_count = 0;
+
+  switch (status_code) {
+  case 400: rsp->status = HTTP_400_BAD_REQUEST; break;
+  case 404: rsp->status = HTTP_404_NOT_FOUND; break;
+  case 409: rsp->status = HTTP_409_CONFLICT; break;
+  case 501: rsp->status = HTTP_501_NOT_IMPLEMENTED; break;
+  default:  rsp->status = HTTP_500_INTERNAL_SERVER_ERROR; break;
+  }
+  return 0;
+}
+
+static int send_error(struct http_response_ctx *rsp, char *buf,
+                      int status_code, const char *message)
+{
+  int len = snprintf(buf, JSON_BUF_SIZE, "{\"error\":\"%s\"}", message);
+  return send_json_status(rsp, buf, len, status_code);
+}
+
+static int send_ok(struct http_response_ctx *rsp, char *buf)
+{
+  int len = snprintf(buf, JSON_BUF_SIZE, "{\"ok\":true}");
+  return send_json(rsp, buf, len);
+}
+
+//////////////////////////////////////////////////////////////
+// Minimal JSON Parser Helpers
+//////////////////////////////////////////////////////////////
+
+static bool json_get_string(const char *body, const char *key,
+                            char *out, size_t out_len)
+{
+  char search[32];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  char *p = strstr(body, search);
+  if (!p) return false;
+
+  char *colon = strchr(p + strlen(search), ':');
+  if (!colon) return false;
+
+  char *q1 = strchr(colon, '"');
+  if (!q1) return false;
+
+  char *q2 = strchr(q1 + 1, '"');
+  if (!q2 || (size_t)(q2 - q1 - 1) >= out_len) return false;
+
+  memcpy(out, q1 + 1, q2 - q1 - 1);
+  out[q2 - q1 - 1] = '\0';
+  return true;
+}
+
+static bool json_get_double(const char *body, const char *key, double *out)
+{
+  char search[32];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  char *p = strstr(body, search);
+  if (!p) return false;
+
+  char *colon = strchr(p + strlen(search), ':');
+  if (!colon) return false;
+
+  *out = strtod(colon + 1, NULL);
+  return true;
+}
+
+static bool json_get_int(const char *body, const char *key, int *out)
+{
+  char search[32];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  char *p = strstr(body, search);
+  if (!p) return false;
+
+  char *colon = strchr(p + strlen(search), ':');
+  if (!colon) return false;
+
+  *out = atoi(colon + 1);
+  return true;
+}
+
+static bool json_get_bool(const char *body, const char *key, bool *out)
+{
+  char search[32];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  char *p = strstr(body, search);
+  if (!p) return false;
+
+  char *colon = strchr(p + strlen(search), ':');
+  if (!colon) return false;
+
+  while (*colon == ':' || *colon == ' ') colon++;
+  if (strncmp(colon, "true", 4) == 0) {
+    *out = true;
+    return true;
+  }
+  if (strncmp(colon, "false", 5) == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+static bool json_get_range(const char *body, const char *key,
+                           double *low, double *high)
+{
+  char search[32];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  char *p = strstr(body, search);
+  if (!p) return false;
+
+  char *bracket = strchr(p, '[');
+  if (!bracket) return false;
+
+  *low = strtod(bracket + 1, NULL);
+
+  char *comma = strchr(bracket, ',');
+  if (!comma) return false;
+
+  *high = strtod(comma + 1, NULL);
+  return true;
+}
+
+static int parse_body(const struct http_request_ctx *req, char *buf,
+                      size_t buf_size)
+{
+  if (req->data_len == 0 || req->data_len >= buf_size) {
+    return -EINVAL;
+  }
+  memcpy(buf, req->data, req->data_len);
+  buf[req->data_len] = '\0';
   return 0;
 }
 
 //////////////////////////////////////////////////////////////
-// GET /api/status
+// Path Helpers
 //////////////////////////////////////////////////////////////
 
-static char status_buf[JSON_BUF_SIZE];
-
-static int handle_api_status(struct http_client_ctx *client,
-                             enum http_transaction_status status,
-                             const struct http_request_ctx *req,
-                             struct http_response_ctx *rsp,
-                             void *user_data)
+static int extract_path_id(const char *url, const char *prefix)
 {
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
+  size_t prefix_len = strlen(prefix);
+
+  if (strncmp(url, prefix, prefix_len) != 0) {
+    return -1;
   }
 
-  struct damper_config *cfg = damper_config_get();
+  const char *id_str = url + prefix_len;
+  if (*id_str < '0' || *id_str > '9') {
+    return -1;
+  }
+  return atoi(id_str);
+}
+
+static bool extract_path_name(const char *url, const char *prefix,
+                              char *out, size_t out_len)
+{
+  size_t prefix_len = strlen(prefix);
+
+  if (strncmp(url, prefix, prefix_len) != 0) {
+    return false;
+  }
+
+  const char *name = url + prefix_len;
+  size_t name_len = strlen(name);
+
+  if (name_len == 0 || name_len >= out_len) {
+    return false;
+  }
+
+  memcpy(out, name, name_len);
+  out[name_len] = '\0';
+  return true;
+}
+
+//////////////////////////////////////////////////////////////
+// /api/damper* — Unified Damper Handler
+//////////////////////////////////////////////////////////////
+
+static char damper_buf[JSON_BUF_SIZE];
+static char damper_body[BODY_BUF_SIZE];
+static char pos_body[BODY_BUF_SIZE];
+static char pos_resp[JSON_BUF_SIZE];
+static char tgt_body[BODY_BUF_SIZE];
+static char tgt_resp[JSON_BUF_SIZE];
+static char servo_buf[JSON_BUF_SIZE];
+static char servo_body[BODY_BUF_SIZE];
+
+static int damper_state_get(struct http_response_ctx *rsp)
+{
   struct temperature_data temp = {0};
   struct damper_data data = {0};
 
   zbus_chan_read(&temperature_data_chan, &temp, PUB_TIMEOUT);
   zbus_chan_read(&damper_data_chan, &data, PUB_TIMEOUT);
 
-  int len = snprintf(status_buf, sizeof(status_buf),
-      "{"
-      "\"temperature\":%.1f,"
-      "\"route\":\"%s\","
-      "\"mode\":\"%s\","
-      "\"servo_degrees\":%.1f,"
-      "\"config\":{"
-        "\"temp_high\":%.1f,"
-        "\"temp_low\":%.1f,"
-        "\"servo_inside\":%.1f,"
-        "\"servo_outside\":%.1f"
-      "}"
-      "}",
-      temp.celsius,
-      data.route == DAMPER_ROUTE_INSIDE ? "inside" : "outside",
-      data.mode == DAMPER_MODE_AUTO ? "auto" : "override",
-      data.servo_degrees,
-      cfg->temp_high, cfg->temp_low,
-      cfg->servo_inside_deg, cfg->servo_outside_deg);
+  char pos_str[8];
+  if (data.position_id >= 0) {
+    snprintf(pos_str, sizeof(pos_str), "%d", data.position_id);
+  } else {
+    strcpy(pos_str, "null");
+  }
 
-  return send_json(rsp, status_buf, len);
+  int len = snprintf(damper_buf, sizeof(damper_buf),
+      "{\"mode\":\"%s\",\"angle\":%.1f,\"position\":%s,\"temperature\":%.1f}",
+      data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
+      data.angle, pos_str, temp.celsius);
+
+  return send_json(rsp, damper_buf, len);
 }
 
-static struct http_resource_detail_dynamic api_status_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_GET),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_status,
-};
+static int damper_state_patch(const struct http_request_ctx *req,
+                              struct http_response_ctx *rsp)
+{
+  if (parse_body(req, damper_body, sizeof(damper_body)) < 0) {
+    return send_error(rsp, damper_buf, 400, "invalid body");
+  }
 
-HTTP_RESOURCE_DEFINE(api_status_res, damper_http_service,
-                     "/api/status", &api_status_detail);
+  int position_id;
+  double angle;
+  bool auto_mode;
 
-//////////////////////////////////////////////////////////////
-// POST /api/config
-//////////////////////////////////////////////////////////////
+  if (json_get_int(damper_body, "position", &position_id)) {
+    const struct position *p = positions_get(position_id);
+    if (!p) {
+      return send_error(rsp, damper_buf, 400, "unknown position");
+    }
+    struct damper_command cmd = {
+        .type = DAMPER_CMD_SET_POSITION,
+        .position_id = position_id,
+    };
+    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
+  } else if (json_get_double(damper_body, "angle", &angle)) {
+    struct servo_config *cfg = servo_config_get();
+    if (angle < 0 || angle > cfg->max_deg) {
+      return send_error(rsp, damper_buf, 400, "angle out of range");
+    }
+    struct damper_command cmd = {
+        .type = DAMPER_CMD_SET_ANGLE,
+        .angle = angle,
+    };
+    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
+  } else if (json_get_bool(damper_body, "auto", &auto_mode) && auto_mode) {
+    struct damper_command cmd = {.type = DAMPER_CMD_SET_AUTO};
+    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
+  } else {
+    return send_error(rsp, damper_buf, 400,
+                      "need position, angle, or auto field");
+  }
 
-static char config_body[BODY_BUF_SIZE];
-static char config_resp[JSON_BUF_SIZE];
+  return send_ok(rsp, damper_buf);
+}
 
-static int handle_api_config(struct http_client_ctx *client,
+static int positions_handler(const char *url,
+                             enum http_method method,
+                             const struct http_request_ctx *req,
+                             struct http_response_ctx *rsp)
+{
+  int id = extract_path_id(url, "/api/damper/positions/");
+
+  if (id < 0 && method == HTTP_GET) {
+    int off = snprintf(pos_resp, sizeof(pos_resp), "{\"positions\":[");
+    bool first = true;
+    for (int i = 0; i < POSITION_MAX_SLOTS; i++) {
+      const struct position *p = positions_get(i);
+      if (!p) continue;
+      off += snprintf(pos_resp + off, sizeof(pos_resp) - off,
+          "%s{\"id\":%d,\"label\":\"%s\",\"angle\":%.1f}",
+          first ? "" : ",", i, p->label, p->angle);
+      first = false;
+    }
+    off += snprintf(pos_resp + off, sizeof(pos_resp) - off, "]}");
+    return send_json(rsp, pos_resp, off);
+  }
+
+  if (id < 0 || id >= POSITION_MAX_SLOTS) {
+    return send_error(rsp, pos_resp, 400, "invalid position id");
+  }
+
+  if (method == HTTP_DELETE) {
+    if (targets_position_referenced(id)) {
+      return send_error(rsp, pos_resp, 409, "position referenced by target");
+    }
+    int rc = positions_delete(id);
+    if (rc == -ENOENT) {
+      return send_error(rsp, pos_resp, 404, "position not found");
+    }
+    return send_ok(rsp, pos_resp);
+  }
+
+  if (parse_body(req, pos_body, sizeof(pos_body)) < 0) {
+    return send_error(rsp, pos_resp, 400, "invalid body");
+  }
+
+  char label[POSITION_LABEL_MAX + 1];
+  double angle;
+
+  if (!json_get_string(pos_body, "label", label, sizeof(label))) {
+    return send_error(rsp, pos_resp, 400, "need label");
+  }
+  if (!json_get_double(pos_body, "angle", &angle)) {
+    return send_error(rsp, pos_resp, 400, "need angle");
+  }
+  if (strlen(label) > POSITION_LABEL_MAX) {
+    return send_error(rsp, pos_resp, 400, "label too long");
+  }
+
+  struct servo_config *cfg = servo_config_get();
+  if (angle < 0 || angle > cfg->max_deg) {
+    return send_error(rsp, pos_resp, 400, "angle out of servo range");
+  }
+
+  int rc = positions_set(id, label, angle);
+  if (rc < 0) {
+    return send_error(rsp, pos_resp, 500, "save failed");
+  }
+
+  int len = snprintf(pos_resp, sizeof(pos_resp),
+      "{\"ok\":true,\"id\":%d,\"label\":\"%s\",\"angle\":%.1f}",
+      id, label, angle);
+  return send_json(rsp, pos_resp, len);
+}
+
+static int targets_handler(const char *url,
+                           enum http_method method,
+                           const struct http_request_ctx *req,
+                           struct http_response_ctx *rsp)
+{
+  int id = extract_path_id(url, "/api/damper/targets/");
+
+  if (id < 0 && method == HTTP_GET) {
+    int off = snprintf(tgt_resp, sizeof(tgt_resp), "{\"targets\":[");
+    bool first = true;
+    for (int i = 0; i < TARGET_MAX_SLOTS; i++) {
+      const struct target *t = targets_get(i);
+      if (!t) continue;
+      off += snprintf(tgt_resp + off, sizeof(tgt_resp) - off,
+          "%s{\"id\":%d,\"range\":[%.1f,%.1f],\"position\":%d}",
+          first ? "" : ",", i, t->range_low, t->range_high, t->position_id);
+      first = false;
+    }
+    off += snprintf(tgt_resp + off, sizeof(tgt_resp) - off, "]}");
+    return send_json(rsp, tgt_resp, off);
+  }
+
+  if (id < 0 || id >= TARGET_MAX_SLOTS) {
+    return send_error(rsp, tgt_resp, 400, "invalid target id");
+  }
+
+  if (method == HTTP_DELETE) {
+    int rc = targets_delete(id);
+    if (rc == -ENOENT) {
+      return send_error(rsp, tgt_resp, 404, "target not found");
+    }
+    return send_ok(rsp, tgt_resp);
+  }
+
+  if (parse_body(req, tgt_body, sizeof(tgt_body)) < 0) {
+    return send_error(rsp, tgt_resp, 400, "invalid body");
+  }
+
+  double range_low, range_high;
+  int position_id;
+
+  if (!json_get_range(tgt_body, "range", &range_low, &range_high)) {
+    return send_error(rsp, tgt_resp, 400, "need range [low, high]");
+  }
+  if (!json_get_int(tgt_body, "position", &position_id)) {
+    return send_error(rsp, tgt_resp, 400, "need position id");
+  }
+
+  int rc = targets_set(id, range_low, range_high, position_id);
+  if (rc == -EINVAL) {
+    return send_error(rsp, tgt_resp, 400, "low must be < high");
+  }
+  if (rc == -ENOENT) {
+    return send_error(rsp, tgt_resp, 400, "position does not exist");
+  }
+  if (rc == -EEXIST) {
+    return send_error(rsp, tgt_resp, 409, "range overlaps existing target");
+  }
+  if (rc < 0) {
+    return send_error(rsp, tgt_resp, 500, "save failed");
+  }
+
+  int len = snprintf(tgt_resp, sizeof(tgt_resp),
+      "{\"ok\":true,\"id\":%d,\"range\":[%.1f,%.1f],\"position\":%d}",
+      id, range_low, range_high, position_id);
+  return send_json(rsp, tgt_resp, len);
+}
+
+static int servo_handler(enum http_method method,
+                         const struct http_request_ctx *req,
+                         struct http_response_ctx *rsp)
+{
+  struct servo_config *cfg = servo_config_get();
+
+  if (method == HTTP_GET) {
+    int len = snprintf(servo_buf, sizeof(servo_buf),
+        "{\"min_us\":%u,\"max_us\":%u,\"max_deg\":%.1f}",
+        cfg->min_us, cfg->max_us, cfg->max_deg);
+    return send_json(rsp, servo_buf, len);
+  }
+
+  if (parse_body(req, servo_body, sizeof(servo_body)) < 0) {
+    return send_error(rsp, servo_buf, 400, "invalid body");
+  }
+
+  int ival;
+  double dval;
+
+  if (json_get_int(servo_body, "min_us", &ival)) {
+    cfg->min_us = (uint32_t)ival;
+  }
+  if (json_get_int(servo_body, "max_us", &ival)) {
+    cfg->max_us = (uint32_t)ival;
+  }
+  if (json_get_double(servo_body, "max_deg", &dval)) {
+    cfg->max_deg = dval;
+  }
+
+  servo_config_save();
+  return send_ok(rsp, servo_buf);
+}
+
+static int handle_api_damper(struct http_client_ctx *client,
                              enum http_transaction_status status,
                              const struct http_request_ctx *req,
                              struct http_response_ctx *rsp,
@@ -165,736 +518,289 @@ static int handle_api_config(struct http_client_ctx *client,
     return 0;
   }
 
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, config_resp, 400, "invalid body");
+  const char *url = (const char *)client->url_buffer;
+
+  if (strcmp(url, "/api/damper") == 0) {
+    if (client->method == HTTP_GET) {
+      return damper_state_get(rsp);
+    }
+    return damper_state_patch(req, rsp);
   }
 
-  memcpy(config_body, req->data, req->data_len);
-  config_body[req->data_len] = '\0';
-
-  char param[32] = {0};
-  double value = 0;
-
-  char *p = strstr(config_body, "\"param\"");
-  char *v = strstr(config_body, "\"value\"");
-
-  if (!p || !v) {
-    return send_json_error(rsp, config_resp, 400,
-                           "need param and value");
+  if (strncmp(url, "/api/damper/positions", 20) == 0) {
+    return positions_handler(url, client->method, req, rsp);
   }
 
-  char *q1 = strchr(p + 7, '"');
-  if (q1) {
-    char *q2 = strchr(q1 + 1, '"');
-    if (q2 && (q2 - q1 - 1) < (int)sizeof(param)) {
-      memcpy(param, q1 + 1, q2 - q1 - 1);
+  if (strncmp(url, "/api/damper/targets", 19) == 0) {
+    return targets_handler(url, client->method, req, rsp);
+  }
+
+  if (strcmp(url, "/api/damper/servo") == 0) {
+    return servo_handler(client->method, req, rsp);
+  }
+
+  return send_error(rsp, damper_buf, 404, "not found");
+}
+
+static struct http_resource_detail_dynamic api_damper_detail = {
+    .common = {
+        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
+        .bitmask_of_supported_http_methods =
+            BIT(HTTP_GET) | BIT(HTTP_PATCH) | BIT(HTTP_PUT) | BIT(HTTP_DELETE),
+        .content_type = "application/json",
+    },
+    .cb = handle_api_damper,
+};
+
+HTTP_RESOURCE_DEFINE(api_damper_res, damper_http_service,
+                     "/api/damper*", &api_damper_detail);
+
+//////////////////////////////////////////////////////////////
+// /api/heaters* — Unified Heaters Handler
+//////////////////////////////////////////////////////////////
+
+static char heaters_buf[JSON_BUF_SIZE];
+static char heater_buf[JSON_BUF_SIZE];
+static char heater_body[BODY_BUF_SIZE];
+
+static int find_heater_by_name(const char *name)
+{
+  int count = heater_ble_get_scan_count();
+  for (int i = 0; i < count; i++) {
+    const struct ble_scan_result *r = heater_ble_get_scan_result(i);
+    if (strcmp(r->name, name) == 0) {
+      return i;
     }
   }
-
-  char *colon = strchr(v + 7, ':');
-  if (colon) {
-    value = strtod(colon + 1, NULL);
-  }
-
-  if (param[0] == '\0') {
-    return send_json_error(rsp, config_resp, 400, "invalid param");
-  }
-
-  struct damper_command cmd;
-
-  if (strcmp(param, "temp_high") == 0) {
-    cmd.type = DAMPER_CMD_SET_TEMP_HIGH;
-  } else if (strcmp(param, "temp_low") == 0) {
-    cmd.type = DAMPER_CMD_SET_TEMP_LOW;
-  } else if (strcmp(param, "servo_inside") == 0) {
-    cmd.type = DAMPER_CMD_SET_SERVO_INSIDE;
-  } else if (strcmp(param, "servo_outside") == 0) {
-    cmd.type = DAMPER_CMD_SET_SERVO_OUTSIDE;
-  } else {
-    return send_json_error(rsp, config_resp, 400, "unknown param");
-  }
-
-  cmd.value = value;
-  zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
-
-  int len = snprintf(config_resp, sizeof(config_resp),
-                     "{\"ok\":true,\"param\":\"%s\",\"value\":%.1f}",
-                     param, value);
-  return send_json(rsp, config_resp, len);
+  return -1;
 }
 
-static struct http_resource_detail_dynamic api_config_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_config,
-};
-
-HTTP_RESOURCE_DEFINE(api_config_res, damper_http_service,
-                     "/api/config", &api_config_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/override
-//////////////////////////////////////////////////////////////
-
-static char override_body[BODY_BUF_SIZE];
-static char override_resp[JSON_BUF_SIZE];
-
-static int handle_api_override(struct http_client_ctx *client,
-                               enum http_transaction_status status,
-                               const struct http_request_ctx *req,
-                               struct http_response_ctx *rsp,
-                               void *user_data)
+static int heaters_scan(const struct http_request_ctx *req,
+                        struct http_response_ctx *rsp)
 {
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, override_resp, 400, "invalid body");
-  }
-
-  memcpy(override_body, req->data, req->data_len);
-  override_body[req->data_len] = '\0';
-
-  struct damper_command cmd = {.value = 0.0};
-
-  if (strstr(override_body, "\"inside\"")) {
-    cmd.type = DAMPER_CMD_OVERRIDE_INSIDE;
-  } else if (strstr(override_body, "\"outside\"")) {
-    cmd.type = DAMPER_CMD_OVERRIDE_OUTSIDE;
-  } else if (strstr(override_body, "\"auto\"")) {
-    cmd.type = DAMPER_CMD_SET_AUTO;
-  } else {
-    return send_json_error(rsp, override_resp, 400,
-                           "mode must be inside, outside, or auto");
-  }
-
-  zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
-
-  const char *mode_str =
-      cmd.type == DAMPER_CMD_OVERRIDE_INSIDE    ? "inside"
-      : cmd.type == DAMPER_CMD_OVERRIDE_OUTSIDE ? "outside"
-                                                : "auto";
-  int len = snprintf(override_resp, sizeof(override_resp),
-                     "{\"ok\":true,\"mode\":\"%s\"}", mode_str);
-  return send_json(rsp, override_resp, len);
-}
-
-static struct http_resource_detail_dynamic api_override_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_override,
-};
-
-HTTP_RESOURCE_DEFINE(api_override_res, damper_http_service,
-                     "/api/override", &api_override_detail);
-
-//////////////////////////////////////////////////////////////
-// GET /api/ble/status
-//////////////////////////////////////////////////////////////
-
-static char ble_status_buf[JSON_BUF_SIZE];
-
-static int handle_api_ble_status(struct http_client_ctx *client,
-                                 enum http_transaction_status status,
-                                 const struct http_request_ctx *req,
-                                 struct http_response_ctx *rsp,
-                                 void *user_data)
-{
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
-  const struct heater_protocol *p = heater_ble_get_protocol();
-  bool connected = heater_ble_is_connected();
-
-  int len;
-
-  if (connected) {
-    struct heater_data hdata = {0};
-    zbus_chan_read(&heater_data_chan, &hdata, K_MSEC(100));
-
-    len = snprintf(ble_status_buf, sizeof(ble_status_buf),
-        "{"
-        "\"connected\":true,"
-        "\"protocol\":\"%s\","
-        "\"scanning\":%s,"
-        "\"telemetry\":{"
-          "\"power\":\"%s\","
-          "\"step\":\"%s\","
-          "\"mode\":\"%s\","
-          "\"exhaust_temp\":%.1f,"
-          "\"ambient_temp\":%.1f,"
-          "\"voltage\":%.1f,"
-          "\"target_temp\":%d,"
-          "\"power_level\":%d,"
-          "\"error\":%d"
-        "}"
-        "}",
-        p ? p->name : "none",
-        heater_ble_is_scanning() ? "true" : "false",
-        heater_power_state_str(hdata.power),
-        heater_run_step_str(hdata.step),
-        heater_run_mode_str(hdata.mode),
-        hdata.exhaust_temp_c, hdata.ambient_temp_c,
-        hdata.voltage, hdata.target_temp,
-        hdata.power_level, hdata.error_code);
-  } else {
-    len = snprintf(ble_status_buf, sizeof(ble_status_buf),
-        "{"
-        "\"connected\":false,"
-        "\"protocol\":\"%s\","
-        "\"scanning\":%s"
-        "}",
-        p ? p->name : "none",
-        heater_ble_is_scanning() ? "true" : "false");
-  }
-
-  return send_json(rsp, ble_status_buf, len);
-}
-
-static struct http_resource_detail_dynamic api_ble_status_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_GET),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_status,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_status_res, damper_http_service,
-                     "/api/ble/status", &api_ble_status_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/scan
-//////////////////////////////////////////////////////////////
-
-static char scan_resp[JSON_BUF_SIZE];
-
-static int handle_api_ble_scan(struct http_client_ctx *client,
-                               enum http_transaction_status status,
-                               const struct http_request_ctx *req,
-                               struct http_response_ctx *rsp,
-                               void *user_data)
-{
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
   int timeout = 5;
 
   if (req->data_len > 0 && req->data_len < BODY_BUF_SIZE) {
     char body[BODY_BUF_SIZE];
     memcpy(body, req->data, req->data_len);
     body[req->data_len] = '\0';
-
-    char *t = strstr(body, "\"timeout\"");
-    if (t) {
-      char *colon = strchr(t + 9, ':');
-      if (colon) {
-        int val = atoi(colon + 1);
-        if (val > 0 && val <= 30) {
-          timeout = val;
-        }
-      }
-    }
+    json_get_int(body, "timeout", &timeout);
+    if (timeout < 1 || timeout > 30) timeout = 5;
   }
 
   int err = heater_ble_scan(timeout);
   if (err == -EALREADY) {
-    return send_json_error(rsp, scan_resp, 400, "already scanning");
-  } else if (err) {
-    return send_json_error(rsp, scan_resp, 500, "scan failed");
+    return send_error(rsp, heaters_buf, 400, "already scanning");
+  }
+  if (err) {
+    return send_error(rsp, heaters_buf, 500, "scan failed");
   }
 
-  int len = snprintf(scan_resp, sizeof(scan_resp),
+  int len = snprintf(heaters_buf, sizeof(heaters_buf),
                      "{\"ok\":true,\"timeout\":%d}", timeout);
-  return send_json(rsp, scan_resp, len);
+  return send_json(rsp, heaters_buf, len);
 }
 
-static struct http_resource_detail_dynamic api_ble_scan_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_scan,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_scan_res, damper_http_service,
-                     "/api/ble/scan", &api_ble_scan_detail);
-
-//////////////////////////////////////////////////////////////
-// GET /api/ble/devices
-//////////////////////////////////////////////////////////////
-
-static char devices_buf[JSON_BUF_SIZE];
-
-static int handle_api_ble_devices(struct http_client_ctx *client,
-                                  enum http_transaction_status status,
-                                  const struct http_request_ctx *req,
-                                  struct http_response_ctx *rsp,
-                                  void *user_data)
+static int heaters_list(struct http_response_ctx *rsp)
 {
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
   heater_ble_scan_stop();
-
   int count = heater_ble_get_scan_count();
-  int off = snprintf(devices_buf, sizeof(devices_buf),
-                     "{\"count\":%d,\"devices\":[", count);
+  int connected_idx = heater_ble_get_connected_index();
 
-  for (int i = 0; i < count && off < (int)sizeof(devices_buf) - 100; i++) {
+  int off = snprintf(heaters_buf, sizeof(heaters_buf),
+                     "{\"heaters\":[");
+
+  for (int i = 0; i < count && off < (int)sizeof(heaters_buf) - 120; i++) {
     const struct ble_scan_result *r = heater_ble_get_scan_result(i);
     char addr_str[BT_ADDR_LE_STR_LEN];
     bt_addr_le_to_str(&r->addr, addr_str, sizeof(addr_str));
 
-    off += snprintf(devices_buf + off, sizeof(devices_buf) - off,
-        "%s{\"index\":%d,\"addr\":\"%s\",\"name\":\"%s\","
-        "\"rssi\":%d,\"protocol\":\"%s\"}",
-        i > 0 ? "," : "", i, addr_str, r->name, r->rssi,
-        r->protocol ? r->protocol->name : "unknown");
+    off += snprintf(heaters_buf + off, sizeof(heaters_buf) - off,
+        "%s{\"name\":\"%s\",\"addr\":\"%s\",\"rssi\":%d,"
+        "\"protocol\":\"%s\",\"connected\":%s}",
+        i > 0 ? "," : "", r->name, addr_str, r->rssi,
+        r->protocol ? r->protocol->name : "unknown",
+        i == connected_idx ? "true" : "false");
   }
 
-  off += snprintf(devices_buf + off, sizeof(devices_buf) - off, "]}");
-  return send_json(rsp, devices_buf, off);
+  off += snprintf(heaters_buf + off, sizeof(heaters_buf) - off, "]}");
+  return send_json(rsp, heaters_buf, off);
 }
 
-static struct http_resource_detail_dynamic api_ble_devices_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_GET),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_devices,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_devices_res, damper_http_service,
-                     "/api/ble/devices", &api_ble_devices_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/connect
-//////////////////////////////////////////////////////////////
-
-static char connect_body[BODY_BUF_SIZE];
-static char connect_resp[JSON_BUF_SIZE];
-
-static int handle_api_ble_connect(struct http_client_ctx *client,
-                                  enum http_transaction_status status,
-                                  const struct http_request_ctx *req,
-                                  struct http_response_ctx *rsp,
-                                  void *user_data)
+static int heater_item(const char *url, enum http_method method,
+                       const struct http_request_ctx *req,
+                       struct http_response_ctx *rsp)
 {
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
+  char name[32];
+  if (!extract_path_name(url, "/api/heaters/", name, sizeof(name))) {
+    return send_error(rsp, heater_buf, 400, "missing heater name");
   }
 
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, connect_resp, 400, "invalid body");
-  }
+  int idx = find_heater_by_name(name);
+  int connected_idx = heater_ble_get_connected_index();
 
-  memcpy(connect_body, req->data, req->data_len);
-  connect_body[req->data_len] = '\0';
-
-  int index = -1;
-  char *idx = strstr(connect_body, "\"index\"");
-  if (idx) {
-    char *colon = strchr(idx + 7, ':');
-    if (colon) {
-      index = atoi(colon + 1);
+  if (method == HTTP_GET) {
+    if (idx < 0) {
+      return send_error(rsp, heater_buf, 404, "heater not found");
     }
+
+    const struct ble_scan_result *r = heater_ble_get_scan_result(idx);
+    bool connected = (idx == connected_idx);
+
+    if (connected) {
+      struct heater_data hdata = {0};
+      zbus_chan_read(&heater_data_chan, &hdata, K_MSEC(100));
+
+      int len = snprintf(heater_buf, sizeof(heater_buf),
+          "{\"name\":\"%s\",\"protocol\":\"%s\",\"connected\":true,"
+          "\"telemetry\":{"
+          "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
+          "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
+          "\"voltage\":%.1f,\"target_temp\":%d,"
+          "\"power_level\":%d,\"error\":%d}}",
+          r->name, r->protocol ? r->protocol->name : "unknown",
+          heater_power_state_str(hdata.power),
+          heater_run_step_str(hdata.step),
+          heater_run_mode_str(hdata.mode),
+          hdata.exhaust_temp_c, hdata.ambient_temp_c,
+          hdata.voltage, hdata.target_temp,
+          hdata.power_level, hdata.error_code);
+      return send_json(rsp, heater_buf, len);
+    }
+
+    int len = snprintf(heater_buf, sizeof(heater_buf),
+        "{\"name\":\"%s\",\"protocol\":\"%s\",\"connected\":false}",
+        r->name, r->protocol ? r->protocol->name : "unknown");
+    return send_json(rsp, heater_buf, len);
   }
 
-  if (index < 0) {
-    return send_json_error(rsp, connect_resp, 400, "need index");
+  if (method == HTTP_PUT) {
+    if (idx < 0) {
+      return send_error(rsp, heater_buf, 404, "heater not found");
+    }
+    if (heater_ble_is_connected()) {
+      return send_error(rsp, heater_buf, 409, "already connected");
+    }
+
+    int err = heater_ble_connect(idx);
+    if (err) {
+      return send_error(rsp, heater_buf, 500, "connect failed");
+    }
+
+    int len = snprintf(heater_buf, sizeof(heater_buf),
+                       "{\"ok\":true,\"name\":\"%s\"}", name);
+    return send_json(rsp, heater_buf, len);
   }
 
-  int err = heater_ble_connect(index);
-  if (err == -EALREADY) {
-    return send_json_error(rsp, connect_resp, 400, "already connected");
-  } else if (err == -EINVAL) {
-    return send_json_error(rsp, connect_resp, 400, "invalid index");
-  } else if (err) {
-    return send_json_error(rsp, connect_resp, 500, "connect failed");
+  if (method == HTTP_DELETE) {
+    if (!heater_ble_is_connected() || idx != connected_idx) {
+      return send_error(rsp, heater_buf, 400, "not connected to this heater");
+    }
+    int err = heater_ble_disconnect();
+    if (err) {
+      return send_error(rsp, heater_buf, 500, "disconnect failed");
+    }
+    return send_ok(rsp, heater_buf);
   }
 
-  int len = snprintf(connect_resp, sizeof(connect_resp),
-                     "{\"ok\":true,\"index\":%d}", index);
-  return send_json(rsp, connect_resp, len);
+  if (method == HTTP_PATCH) {
+    if (!heater_ble_is_connected() || idx != connected_idx) {
+      return send_error(rsp, heater_buf, 400, "not connected to this heater");
+    }
+    if (parse_body(req, heater_body, sizeof(heater_body)) < 0) {
+      return send_error(rsp, heater_buf, 400, "invalid body");
+    }
+
+    bool power_val;
+    int int_val;
+    char mode_str[16];
+
+    if (json_get_bool(heater_body, "power", &power_val)) {
+      int err = heater_ble_send_power(power_val);
+      if (err == -ENOTSUP) {
+        return send_error(rsp, heater_buf, 501, "not supported");
+      }
+      if (err) {
+        return send_error(rsp, heater_buf, 500, "send failed");
+      }
+    } else if (json_get_string(heater_body, "mode", mode_str,
+                               sizeof(mode_str))) {
+      enum heater_run_mode mode;
+      if (strcmp(mode_str, "manual") == 0) mode = HEATER_MODE_MANUAL;
+      else if (strcmp(mode_str, "automatic") == 0) mode = HEATER_MODE_AUTOMATIC;
+      else if (strcmp(mode_str, "fan") == 0) mode = HEATER_MODE_FAN;
+      else return send_error(rsp, heater_buf, 400, "invalid mode");
+
+      int err = heater_ble_send_set_mode(mode);
+      if (err == -ENOTSUP) {
+        return send_error(rsp, heater_buf, 501, "not supported");
+      }
+      if (err) {
+        return send_error(rsp, heater_buf, 500, "send failed");
+      }
+    } else if (json_get_int(heater_body, "temp", &int_val)) {
+      if (int_val < 8 || int_val > 36) {
+        return send_error(rsp, heater_buf, 400, "temp must be 8-36");
+      }
+      int err = heater_ble_send_set_temp(int_val);
+      if (err) {
+        return send_error(rsp, heater_buf, 500, "send failed");
+      }
+    } else if (json_get_int(heater_body, "power_level", &int_val)) {
+      if (int_val < 1 || int_val > 10) {
+        return send_error(rsp, heater_buf, 400, "power_level must be 1-10");
+      }
+      int err = heater_ble_send_set_temp(int_val);
+      if (err) {
+        return send_error(rsp, heater_buf, 500, "send failed");
+      }
+    } else {
+      return send_error(rsp, heater_buf, 400,
+                        "need power, mode, temp, or power_level");
+    }
+
+    return send_ok(rsp, heater_buf);
+  }
+
+  return send_error(rsp, heater_buf, 400, "unsupported method");
 }
 
-static struct http_resource_detail_dynamic api_ble_connect_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_connect,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_connect_res, damper_http_service,
-                     "/api/ble/connect", &api_ble_connect_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/disconnect
-//////////////////////////////////////////////////////////////
-
-static char disconnect_resp[128];
-
-static int handle_api_ble_disconnect(struct http_client_ctx *client,
-                                     enum http_transaction_status status,
-                                     const struct http_request_ctx *req,
-                                     struct http_response_ctx *rsp,
-                                     void *user_data)
+static int handle_api_heaters(struct http_client_ctx *client,
+                              enum http_transaction_status status,
+                              const struct http_request_ctx *req,
+                              struct http_response_ctx *rsp,
+                              void *user_data)
 {
   if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
     return 0;
   }
 
-  int err = heater_ble_disconnect();
-  if (err == -ENOTCONN) {
-    return send_json_error(rsp, disconnect_resp, 400, "not connected");
-  } else if (err) {
-    return send_json_error(rsp, disconnect_resp, 500, "disconnect failed");
+  const char *url = (const char *)client->url_buffer;
+
+  if (strcmp(url, "/api/heaters") == 0) {
+    return heaters_list(rsp);
   }
 
-  int len = snprintf(disconnect_resp, sizeof(disconnect_resp),
-                     "{\"ok\":true}");
-  return send_json(rsp, disconnect_resp, len);
+  if (strcmp(url, "/api/heaters/scan") == 0) {
+    return heaters_scan(req, rsp);
+  }
+
+  return heater_item(url, client->method, req, rsp);
 }
 
-static struct http_resource_detail_dynamic api_ble_disconnect_detail = {
+static struct http_resource_detail_dynamic api_heaters_detail = {
     .common = {
         .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
+        .bitmask_of_supported_http_methods =
+            BIT(HTTP_GET) | BIT(HTTP_POST) | BIT(HTTP_PUT) |
+            BIT(HTTP_DELETE) | BIT(HTTP_PATCH),
         .content_type = "application/json",
     },
-    .cb = handle_api_ble_disconnect,
+    .cb = handle_api_heaters,
 };
 
-HTTP_RESOURCE_DEFINE(api_ble_disconnect_res, damper_http_service,
-                     "/api/ble/disconnect", &api_ble_disconnect_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/protocol
-//////////////////////////////////////////////////////////////
-
-static char proto_body[BODY_BUF_SIZE];
-static char proto_resp[128];
-
-static int handle_api_ble_protocol(struct http_client_ctx *client,
-                                   enum http_transaction_status status,
-                                   const struct http_request_ctx *req,
-                                   struct http_response_ctx *rsp,
-                                   void *user_data)
-{
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, proto_resp, 400, "invalid body");
-  }
-
-  memcpy(proto_body, req->data, req->data_len);
-  proto_body[req->data_len] = '\0';
-
-  if (strstr(proto_body, "\"byd\"")) {
-    heater_ble_set_protocol(&heater_protocol_byd);
-  } else if (strstr(proto_body, "\"cc\"")) {
-    heater_ble_set_protocol(&heater_protocol_cc);
-  } else if (strstr(proto_body, "\"auto\"")) {
-    heater_ble_set_protocol(NULL);
-  } else {
-    return send_json_error(rsp, proto_resp, 400,
-                           "protocol must be byd, cc, or auto");
-  }
-
-  const struct heater_protocol *p = heater_ble_get_protocol();
-  int len = snprintf(proto_resp, sizeof(proto_resp),
-                     "{\"ok\":true,\"protocol\":\"%s\"}",
-                     p ? p->name : "auto");
-  return send_json(rsp, proto_resp, len);
-}
-
-static struct http_resource_detail_dynamic api_ble_protocol_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_protocol,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_protocol_res, damper_http_service,
-                     "/api/ble/protocol", &api_ble_protocol_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/power
-//////////////////////////////////////////////////////////////
-
-static char power_body[BODY_BUF_SIZE];
-static char power_resp[128];
-
-static int handle_api_ble_power(struct http_client_ctx *client,
-                                enum http_transaction_status status,
-                                const struct http_request_ctx *req,
-                                struct http_response_ctx *rsp,
-                                void *user_data)
-{
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, power_resp, 400, "invalid body");
-  }
-
-  memcpy(power_body, req->data, req->data_len);
-  power_body[req->data_len] = '\0';
-
-  bool on;
-
-  if (strstr(power_body, "\"on\"") || strstr(power_body, "true")) {
-    on = true;
-  } else if (strstr(power_body, "\"off\"") || strstr(power_body, "false")) {
-    on = false;
-  } else {
-    return send_json_error(rsp, power_resp, 400,
-                           "need on/off or true/false");
-  }
-
-  int err = heater_ble_send_power(on);
-  if (err == -ENOTCONN) {
-    return send_json_error(rsp, power_resp, 400, "not connected");
-  } else if (err == -ENOTSUP) {
-    return send_json_error(rsp, power_resp, 400, "not supported");
-  } else if (err) {
-    return send_json_error(rsp, power_resp, 500, "send failed");
-  }
-
-  int len = snprintf(power_resp, sizeof(power_resp),
-                     "{\"ok\":true,\"power\":\"%s\"}", on ? "on" : "off");
-  return send_json(rsp, power_resp, len);
-}
-
-static struct http_resource_detail_dynamic api_ble_power_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_power,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_power_res, damper_http_service,
-                     "/api/ble/power", &api_ble_power_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/temp
-//////////////////////////////////////////////////////////////
-
-static char temp_body[BODY_BUF_SIZE];
-static char temp_resp[128];
-
-static int handle_api_ble_temp(struct http_client_ctx *client,
-                               enum http_transaction_status status,
-                               const struct http_request_ctx *req,
-                               struct http_response_ctx *rsp,
-                               void *user_data)
-{
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, temp_resp, 400, "invalid body");
-  }
-
-  memcpy(temp_body, req->data, req->data_len);
-  temp_body[req->data_len] = '\0';
-
-  char *v = strstr(temp_body, "\"temp\"");
-  if (!v) {
-    return send_json_error(rsp, temp_resp, 400, "need temp field");
-  }
-
-  char *colon = strchr(v + 6, ':');
-  if (!colon) {
-    return send_json_error(rsp, temp_resp, 400, "invalid format");
-  }
-
-  int temp_c = atoi(colon + 1);
-  if (temp_c < 8 || temp_c > 36) {
-    return send_json_error(rsp, temp_resp, 400,
-                           "temp must be 8-36");
-  }
-
-  int err = heater_ble_send_set_temp(temp_c);
-  if (err == -ENOTCONN) {
-    return send_json_error(rsp, temp_resp, 400, "not connected");
-  } else if (err == -ENOTSUP) {
-    return send_json_error(rsp, temp_resp, 400, "not supported");
-  } else if (err) {
-    return send_json_error(rsp, temp_resp, 500, "send failed");
-  }
-
-  int len = snprintf(temp_resp, sizeof(temp_resp),
-                     "{\"ok\":true,\"temp\":%d}", temp_c);
-  return send_json(rsp, temp_resp, len);
-}
-
-static struct http_resource_detail_dynamic api_ble_temp_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_temp,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_temp_res, damper_http_service,
-                     "/api/ble/temp", &api_ble_temp_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/gear
-//////////////////////////////////////////////////////////////
-
-static char plevel_body[BODY_BUF_SIZE];
-static char plevel_resp[128];
-
-static int handle_api_ble_power_level(struct http_client_ctx *client,
-                                      enum http_transaction_status status,
-                                      const struct http_request_ctx *req,
-                                      struct http_response_ctx *rsp,
-                                      void *user_data)
-{
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, plevel_resp, 400, "invalid body");
-  }
-
-  memcpy(plevel_body, req->data, req->data_len);
-  plevel_body[req->data_len] = '\0';
-
-  char *v = strstr(plevel_body, "\"level\"");
-  if (!v) {
-    return send_json_error(rsp, plevel_resp, 400, "need level field");
-  }
-
-  char *colon = strchr(v + 7, ':');
-  if (!colon) {
-    return send_json_error(rsp, plevel_resp, 400, "invalid format");
-  }
-
-  int level = atoi(colon + 1);
-  if (level < 1 || level > 10) {
-    return send_json_error(rsp, plevel_resp, 400,
-                           "level must be 1-10");
-  }
-
-  int err = heater_ble_send_set_temp(level);
-  if (err == -ENOTCONN) {
-    return send_json_error(rsp, plevel_resp, 400, "not connected");
-  } else if (err) {
-    return send_json_error(rsp, plevel_resp, 500, "send failed");
-  }
-
-  int len = snprintf(plevel_resp, sizeof(plevel_resp),
-                     "{\"ok\":true,\"level\":%d}", level);
-  return send_json(rsp, plevel_resp, len);
-}
-
-static struct http_resource_detail_dynamic api_ble_power_level_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_power_level,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_power_level_res, damper_http_service,
-                     "/api/ble/power-level",
-                     &api_ble_power_level_detail);
-
-//////////////////////////////////////////////////////////////
-// POST /api/ble/mode
-//////////////////////////////////////////////////////////////
-
-static char mode_body[BODY_BUF_SIZE];
-static char mode_resp[128];
-
-static int handle_api_ble_mode(struct http_client_ctx *client,
-                               enum http_transaction_status status,
-                               const struct http_request_ctx *req,
-                               struct http_response_ctx *rsp,
-                               void *user_data)
-{
-  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-    return 0;
-  }
-
-  if (req->data_len == 0 || req->data_len >= BODY_BUF_SIZE) {
-    return send_json_error(rsp, mode_resp, 400, "invalid body");
-  }
-
-  memcpy(mode_body, req->data, req->data_len);
-  mode_body[req->data_len] = '\0';
-
-  enum heater_run_mode mode;
-  const char *mode_str;
-
-  if (strstr(mode_body, "\"manual\"")) {
-    mode = HEATER_MODE_MANUAL;
-    mode_str = "manual";
-  } else if (strstr(mode_body, "\"automatic\"")) {
-    mode = HEATER_MODE_AUTOMATIC;
-    mode_str = "automatic";
-  } else if (strstr(mode_body, "\"fan\"")) {
-    mode = HEATER_MODE_FAN;
-    mode_str = "fan";
-  } else {
-    return send_json_error(rsp, mode_resp, 400,
-                           "mode must be manual, automatic, or fan");
-  }
-
-  int err = heater_ble_send_set_mode(mode);
-  if (err == -ENOTCONN) {
-    return send_json_error(rsp, mode_resp, 400, "not connected");
-  } else if (err == -ENOTSUP) {
-    return send_json_error(rsp, mode_resp, 400, "not supported");
-  } else if (err) {
-    return send_json_error(rsp, mode_resp, 500, "send failed");
-  }
-
-  int len = snprintf(mode_resp, sizeof(mode_resp),
-                     "{\"ok\":true,\"mode\":\"%s\"}", mode_str);
-  return send_json(rsp, mode_resp, len);
-}
-
-static struct http_resource_detail_dynamic api_ble_mode_detail = {
-    .common = {
-        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
-        .bitmask_of_supported_http_methods = BIT(HTTP_POST),
-        .content_type = "application/json",
-    },
-    .cb = handle_api_ble_mode,
-};
-
-HTTP_RESOURCE_DEFINE(api_ble_mode_res, damper_http_service,
-                     "/api/ble/mode", &api_ble_mode_detail);
+HTTP_RESOURCE_DEFINE(api_heaters_res, damper_http_service,
+                     "/api/heaters*", &api_heaters_detail);
 
 //////////////////////////////////////////////////////////////
 // Server Lifecycle
