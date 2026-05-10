@@ -43,6 +43,11 @@ export default function App() {
     }
   };
   const disconnectHeater = () => send({ type: 'heaters.disconnect' });
+  const heaterCmd = (cmd: Record<string, unknown>) =>
+    send({ type: 'heater.command', ...cmd });
+  const setPower = (on: boolean) => heaterCmd({ power: on });
+  const setMode = (mode: string) => heaterCmd({ mode });
+  const setTemp = (temp: number) => heaterCmd({ temp: Math.max(8, Math.min(36, temp)) });
 
   return (
     <div class="shell">
@@ -177,7 +182,55 @@ export default function App() {
                   <div class="stat-sm">{heater()!.power_level}</div>
                 </div>
               </div>
-              <div class="card-actions" style="margin-top: var(--void-space-4)">
+              <div class="heater-controls-bar">
+                <div class="control-group">
+                  <div class="stat-label">Power</div>
+                  <div class="control-row">
+                    <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
+                      size="sm" color="success"
+                      onClick={() => setPower(true)}>
+                      On
+                    </void-button>
+                    <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
+                      size="sm" color="error"
+                      onClick={() => setPower(false)}>
+                      Off
+                    </void-button>
+                  </div>
+                </div>
+                <div class="control-group">
+                  <div class="stat-label">Mode</div>
+                  <div class="control-row">
+                    <void-button variant="outline" size="sm"
+                      onClick={() => setMode('manual')}>
+                      Manual
+                    </void-button>
+                    <void-button variant="outline" size="sm"
+                      onClick={() => setMode('automatic')}>
+                      Auto
+                    </void-button>
+                    <void-button variant="outline" size="sm"
+                      onClick={() => setMode('fan')}>
+                      Fan
+                    </void-button>
+                  </div>
+                </div>
+                <div class="control-group">
+                  <div class="stat-label">Target Temp</div>
+                  <div class="control-row">
+                    <void-button variant="outline" size="sm"
+                      onClick={() => setTemp(heater()!.target_temp - 1)}>
+                      −
+                    </void-button>
+                    <span class="temp-display">{heater()!.target_temp}°C</span>
+                    <void-button variant="outline" size="sm"
+                      onClick={() => setTemp(heater()!.target_temp + 1)}>
+                      +
+                    </void-button>
+                  </div>
+                </div>
+              </div>
+              <div class="card-actions">
                 <void-button variant="outline" size="sm" color="error" onClick={disconnectHeater}>
                   Disconnect
                 </void-button>

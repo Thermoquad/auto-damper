@@ -535,15 +535,8 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       }
       int err = heater_ble_send_set_temp(int_val);
       if (err) { ws_send_result(slot, false, "send failed"); return; }
-    } else if (ws_json_get_int(msg, "power_level", &int_val)) {
-      if (int_val < 1 || int_val > 10) {
-        ws_send_result(slot, false, "power_level must be 1-10");
-        return;
-      }
-      int err = heater_ble_send_set_temp(int_val);
-      if (err) { ws_send_result(slot, false, "send failed"); return; }
     } else {
-      ws_send_result(slot, false, "need power, mode, temp, or power_level");
+      ws_send_result(slot, false, "need power, mode, or temp");
       return;
     }
     ws_send_result(slot, true, NULL);

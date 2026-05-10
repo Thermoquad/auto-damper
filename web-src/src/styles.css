@@ -141,3 +141,33 @@ body {
   font-weight: var(--void-weight-normal);
   font-family: var(--void-font-sans);
 }
+
+/* Heater Controls */
+.heater-controls-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--void-space-4);
+  margin-top: var(--void-space-5);
+  padding-top: var(--void-space-4);
+  border-top: 1px solid var(--void-color-border);
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--void-space-2);
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-2);
+}
+
+.temp-display {
+  font-family: var(--void-font-mono);
+  font-weight: var(--void-weight-semibold);
+  font-size: var(--void-text-lg);
+  min-width: 4ch;
+  text-align: center;
+}
