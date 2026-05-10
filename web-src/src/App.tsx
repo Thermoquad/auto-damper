@@ -34,10 +34,7 @@ export default function App() {
   const scanHeaters = () => {
     setScanning(true);
     send({ type: 'heaters.scan', timeout: 5 });
-    setTimeout(() => {
-      send({ type: 'heaters.list' });
-      setScanning(false);
-    }, 5500);
+    setTimeout(() => setScanning(false), 5500);
   };
   const selectHeater = (name: string) => {
     if (!name) {
@@ -73,6 +70,7 @@ export default function App() {
     send({ type: 'damper.status' });
     send({ type: 'positions.list' });
     send({ type: 'targets.list' });
+    send({ type: 'heaters.list' });
   };
   createEffect(() => { if (connected()) loadConfig(); });
 
