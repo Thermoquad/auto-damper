@@ -24,12 +24,20 @@ enum damper_command_type {
   DAMPER_CMD_SET_AUTO,
   DAMPER_CMD_SET_POSITION,
   DAMPER_CMD_SET_ANGLE,
+  DAMPER_CMD_POSITION_SET,
+  DAMPER_CMD_POSITION_DELETE,
+  DAMPER_CMD_TARGET_SET,
+  DAMPER_CMD_TARGET_DELETE,
 };
 
 struct damper_command {
   enum damper_command_type type;
   int position_id;
   double angle;
+  char label[16];
+  int target_id;
+  double range_low;
+  double range_high;
 };
 
 ZBUS_CHAN_DECLARE(damper_command_chan);

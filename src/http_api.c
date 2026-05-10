@@ -338,10 +338,8 @@ static int positions_handler(const char *url,
     if (targets_position_referenced(id)) {
       return send_error(rsp, pos_resp, 409, "position referenced by target");
     }
-    int rc = positions_delete(id);
-    if (rc == -ENOENT) {
-      return send_error(rsp, pos_resp, 404, "position not found");
-    }
+    struct damper_command cmd = {.type = DAMPER_CMD_POSITION_DELETE, .position_id = id};
+    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
     return send_ok(rsp, pos_resp);
   }
 
@@ -367,10 +365,10 @@ static int positions_handler(const char *url,
     return send_error(rsp, pos_resp, 400, "angle out of servo range");
   }
 
-  int rc = positions_set(id, label, angle);
-  if (rc < 0) {
-    return send_error(rsp, pos_resp, 500, "save failed");
-  }
+  struct damper_command cmd = {.type = DAMPER_CMD_POSITION_SET,
+      .position_id = id, .angle = angle};
+  strncpy(cmd.label, label, sizeof(cmd.label) - 1);
+  zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
 
   int len = snprintf(pos_resp, sizeof(pos_resp),
       "{\"ok\":true,\"id\":%d,\"label\":\"%s\",\"angle\":%.1f}",
@@ -405,10 +403,8 @@ static int targets_handler(const char *url,
   }
 
   if (method == HTTP_DELETE) {
-    int rc = targets_delete(id);
-    if (rc == -ENOENT) {
-      return send_error(rsp, tgt_resp, 404, "target not found");
-    }
+    struct damper_command cmd = {.type = DAMPER_CMD_TARGET_DELETE, .target_id = id};
+    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
     return send_ok(rsp, tgt_resp);
   }
 
@@ -426,19 +422,10 @@ static int targets_handler(const char *url,
     return send_error(rsp, tgt_resp, 400, "need position id");
   }
 
-  int rc = targets_set(id, range_low, range_high, position_id);
-  if (rc == -EINVAL) {
-    return send_error(rsp, tgt_resp, 400, "low must be < high");
-  }
-  if (rc == -ENOENT) {
-    return send_error(rsp, tgt_resp, 400, "position does not exist");
-  }
-  if (rc == -EEXIST) {
-    return send_error(rsp, tgt_resp, 409, "range overlaps existing target");
-  }
-  if (rc < 0) {
-    return send_error(rsp, tgt_resp, 500, "save failed");
-  }
+  struct damper_command cmd = {.type = DAMPER_CMD_TARGET_SET,
+      .target_id = id, .position_id = position_id,
+      .range_low = range_low, .range_high = range_high};
+  zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
 
   int len = snprintf(tgt_resp, sizeof(tgt_resp),
       "{\"ok\":true,\"id\":%d,\"range\":[%.1f,%.1f],\"position\":%d}",

@@ -209,6 +209,22 @@ static void command_callback(const struct zbus_channel *chan)
     smf_set_state(SMF_CTX(&s), &states[DAMPER_STATE_MANUAL]);
     move_to_angle(cmd->angle, -1);
     break;
+
+  case DAMPER_CMD_POSITION_SET:
+    positions_set(cmd->position_id, cmd->label, cmd->angle);
+    break;
+
+  case DAMPER_CMD_POSITION_DELETE:
+    positions_delete(cmd->position_id);
+    break;
+
+  case DAMPER_CMD_TARGET_SET:
+    targets_set(cmd->target_id, cmd->range_low, cmd->range_high, cmd->position_id);
+    break;
+
+  case DAMPER_CMD_TARGET_DELETE:
+    targets_delete(cmd->target_id);
+    break;
   }
 
   k_mutex_unlock(&damper_mutex);
@@ -227,8 +243,7 @@ ZBUS_CHAN_DEFINE(damper_command_chan,
                 struct damper_command,
                 NULL, NULL,
                 ZBUS_OBSERVERS(damper_cmd_listener),
-                ZBUS_MSG_INIT(.type = DAMPER_CMD_SET_AUTO,
-                              .position_id = -1, .angle = 0.0));
+                ZBUS_MSG_INIT(.type = DAMPER_CMD_SET_AUTO));
 
 ZBUS_CHAN_DEFINE(damper_data_chan,
                 struct damper_data,

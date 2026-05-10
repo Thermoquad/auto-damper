@@ -323,7 +323,7 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
 
   } else if (strcmp(type, "positions.set") == 0) {
     int id;
-    char label[POSITION_LABEL_MAX + 1];
+    char label[16];
     double angle;
 
     if (!ws_json_get_int(msg, "id", &id) || id < 0 || id >= POSITION_MAX_SLOTS) {
@@ -343,11 +343,10 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       ws_send_result(slot, false, "angle out of servo range");
       return;
     }
-    int rc = positions_set(id, label, angle);
-    if (rc < 0) {
-      ws_send_result(slot, false, "save failed");
-      return;
-    }
+    struct damper_command cmd = {.type = DAMPER_CMD_POSITION_SET,
+        .position_id = id, .angle = angle};
+    strncpy(cmd.label, label, sizeof(cmd.label) - 1);
+    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "positions.delete") == 0) {
@@ -360,11 +359,8 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       ws_send_result(slot, false, "position referenced by target");
       return;
     }
-    int rc = positions_delete(id);
-    if (rc == -ENOENT) {
-      ws_send_result(slot, false, "not found");
-      return;
-    }
+    struct damper_command cmd = {.type = DAMPER_CMD_POSITION_DELETE, .position_id = id};
+    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "targets.set") == 0) {
@@ -383,11 +379,10 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       ws_send_result(slot, false, "need position id");
       return;
     }
-    int rc = targets_set(id, range_low, range_high, position_id);
-    if (rc == -EINVAL) { ws_send_result(slot, false, "low must be < high"); return; }
-    if (rc == -ENOENT) { ws_send_result(slot, false, "position does not exist"); return; }
-    if (rc == -EEXIST) { ws_send_result(slot, false, "range overlaps"); return; }
-    if (rc < 0) { ws_send_result(slot, false, "save failed"); return; }
+    struct damper_command cmd = {.type = DAMPER_CMD_TARGET_SET,
+        .target_id = id, .position_id = position_id,
+        .range_low = range_low, .range_high = range_high};
+    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "targets.delete") == 0) {
@@ -396,12 +391,41 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       ws_send_result(slot, false, "need id");
       return;
     }
-    int rc = targets_delete(id);
-    if (rc == -ENOENT) {
-      ws_send_result(slot, false, "not found");
-      return;
-    }
+    struct damper_command cmd = {.type = DAMPER_CMD_TARGET_DELETE, .target_id = id};
+    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
+
+  } else if (strcmp(type, "positions.list") == 0) {
+    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
+        "{\"type\":\"positions\",\"positions\":[");
+    bool first = true;
+    for (int i = 0; i < POSITION_MAX_SLOTS && len < (int)sizeof(ws_cmd_buf) - 60; i++) {
+      const struct position *p = positions_get(i);
+      if (!p) continue;
+      len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len,
+          "%s{\"id\":%d,\"label\":\"%s\",\"angle\":%.1f}",
+          first ? "" : ",", i, p->label, p->angle);
+      first = false;
+    }
+    len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len, "]}");
+    ws_send_to(slot, ws_cmd_buf, len);
+    return;
+
+  } else if (strcmp(type, "targets.list") == 0) {
+    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
+        "{\"type\":\"targets\",\"targets\":[");
+    bool first = true;
+    for (int i = 0; i < TARGET_MAX_SLOTS && len < (int)sizeof(ws_cmd_buf) - 60; i++) {
+      const struct target *t = targets_get(i);
+      if (!t) continue;
+      len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len,
+          "%s{\"id\":%d,\"range\":[%.1f,%.1f],\"position\":%d}",
+          first ? "" : ",", i, t->range_low, t->range_high, t->position_id);
+      first = false;
+    }
+    len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len, "]}");
+    ws_send_to(slot, ws_cmd_buf, len);
+    return;
 
   } else if (strcmp(type, "servo.set") == 0) {
     struct servo_config *cfg = servo_config_get();
