@@ -2,7 +2,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/fs/nvs.h>
+#include <zephyr/kvss/nvs.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/drivers/flash.h>
 
@@ -15,9 +15,9 @@ LOG_MODULE_REGISTER(config, LOG_LEVEL_INF);
 //////////////////////////////////////////////////////////////
 
 #define STORAGE_PARTITION       storage_partition
-#define STORAGE_PARTITION_ID    FIXED_PARTITION_ID(STORAGE_PARTITION)
-#define STORAGE_PARTITION_DEVICE FIXED_PARTITION_DEVICE(STORAGE_PARTITION)
-#define STORAGE_PARTITION_OFFSET FIXED_PARTITION_OFFSET(STORAGE_PARTITION)
+#define STORAGE_PARTITION_ID    PARTITION_ID(STORAGE_PARTITION)
+#define STORAGE_PARTITION_DEVICE PARTITION_DEVICE(STORAGE_PARTITION)
+#define STORAGE_PARTITION_OFFSET PARTITION_OFFSET(STORAGE_PARTITION)
 
 #define NVS_SECTOR_COUNT 3
 
