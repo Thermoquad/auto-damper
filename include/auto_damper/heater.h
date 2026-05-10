@@ -65,6 +65,7 @@ struct heater_protocol {
   int (*encode_power)(uint8_t *buf, size_t len, bool on);
   int (*encode_set_temp)(uint8_t *buf, size_t len, int temp_c);
   int (*encode_set_mode)(uint8_t *buf, size_t len, enum heater_run_mode mode);
+  int (*encode_adjust_power)(uint8_t *buf, size_t len, int delta);
 };
 
 //////////////////////////////////////////////////////////////

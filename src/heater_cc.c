@@ -67,15 +67,23 @@ static int cc_decode(const uint8_t *buf, size_t len, struct heater_data *data)
     break;
   }
 
-  if (buf[5] == 0xFF) {
+  switch (buf[5]) {
+  case 0x00:
+    data->mode = HEATER_MODE_MANUAL;
+    break;
+  case 0x01:
+    data->mode = HEATER_MODE_AUTOMATIC;
+    break;
+  case 0xFF:
     data->error_code = buf[6];
-    data->power_level = 0;
-  } else {
-    data->error_code = 0;
-    data->power_level = buf[6];
+    break;
   }
 
-  data->target_temp = (buf[5] != 0xFF) ? buf[6] : 0;
+  if (buf[5] != 0xFF) {
+    data->error_code = 0;
+    data->power_level = buf[6];
+    data->target_temp = buf[6];
+  }
   data->voltage = (double)buf[9];
   data->ambient_temp_c = (double)buf[11] - 30.0;
   data->exhaust_temp_c = (double)((buf[12] << 8) | buf[13]);
@@ -142,10 +150,10 @@ static int cc_encode_set_mode(uint8_t *buf, size_t len,
 
   switch (mode) {
   case HEATER_MODE_MANUAL:
-    cc_cmd(buf, 0xBB, 0xA1);
+    cc_cmd(buf, 0xBB, 0xAD);
     break;
   case HEATER_MODE_AUTOMATIC:
-    cc_cmd(buf, 0xBB, 0xA5);
+    cc_cmd(buf, 0xBB, 0xAC);
     break;
   case HEATER_MODE_FAN:
     cc_cmd(buf, 0xBB, 0xA4);
@@ -153,6 +161,15 @@ static int cc_encode_set_mode(uint8_t *buf, size_t len,
   default:
     return -EINVAL;
   }
+  return 8;
+}
+
+static int cc_encode_adjust_power(uint8_t *buf, size_t len, int delta)
+{
+  if (len < 8) {
+    return -ENOMEM;
+  }
+  cc_cmd(buf, 0xBB, delta > 0 ? 0xA2 : 0xA3);
   return 8;
 }
 
@@ -172,4 +189,5 @@ const struct heater_protocol heater_protocol_cc = {
     .encode_power = cc_encode_power,
     .encode_set_temp = cc_encode_set_temp,
     .encode_set_mode = cc_encode_set_mode,
+    .encode_adjust_power = cc_encode_adjust_power,
 };
