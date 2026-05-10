@@ -450,6 +450,23 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     }
     ws_send_result(slot, true, NULL);
 
+  } else if (strcmp(type, "heaters.list") == 0) {
+    int count = heater_ble_get_scan_count();
+    int connected_idx = heater_ble_get_connected_index();
+    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
+        "{\"type\":\"heaters\",\"connected\":%d,\"devices\":[", connected_idx);
+    for (int i = 0; i < count && len < (int)sizeof(ws_cmd_buf) - 80; i++) {
+      const struct ble_scan_result *r = heater_ble_get_scan_result(i);
+      if (!r) continue;
+      if (i > 0) ws_cmd_buf[len++] = ',';
+      len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len,
+          "{\"name\":\"%s\",\"rssi\":%d,\"protocol\":\"%s\"}",
+          r->name, r->rssi, r->protocol ? r->protocol->name : "unknown");
+    }
+    len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len, "]}");
+    ws_send_to(slot, ws_cmd_buf, len);
+    return;
+
   } else if (strcmp(type, "heaters.connect") == 0) {
     char name[32];
     if (!ws_json_get_string(msg, "name", name, sizeof(name))) {

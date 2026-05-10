@@ -20,14 +20,17 @@ export type HeaterMsg = {
   error: number;
   connected: boolean;
 };
+export type HeaterDevice = { name: string; rssi: number; protocol: string };
+export type HeatersMsg = { type: 'heaters'; connected: number; devices: HeaterDevice[] };
 export type ResultMsg = { type: 'result'; ok: boolean; error?: string };
-export type WsMessage = TemperatureMsg | DamperMsg | HeaterMsg | ResultMsg;
+export type WsMessage = TemperatureMsg | DamperMsg | HeaterMsg | HeatersMsg | ResultMsg;
 
 export function createWs() {
   const [connected, setConnected] = createSignal(false);
   const [temperature, setTemperature] = createSignal<TemperatureMsg | null>(null);
   const [damper, setDamper] = createSignal<DamperMsg | null>(null);
   const [heater, setHeater] = createSignal<HeaterMsg | null>(null);
+  const [heaters, setHeaters] = createSignal<HeatersMsg | null>(null);
   const [lastResult, setLastResult] = createSignal<ResultMsg | null>(null);
 
   let ws: WebSocket | null = null;
@@ -50,6 +53,9 @@ export function createWs() {
           break;
         case 'heater':
           setHeater(msg);
+          break;
+        case 'heaters':
+          setHeaters(msg as HeatersMsg);
           break;
         case 'result':
           setLastResult(msg);
@@ -78,5 +84,5 @@ export function createWs() {
     ws?.close();
   });
 
-  return { connected, temperature, damper, heater, lastResult, send };
+  return { connected, temperature, damper, heater, heaters, lastResult, send };
 }

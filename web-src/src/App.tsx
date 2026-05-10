@@ -1,18 +1,27 @@
-import { Show } from 'solid-js';
+import { Show, For, createSignal } from 'solid-js';
 import '@voidable/ui';
 import { createWs } from './ws';
 
 export default function App() {
-  const { connected, temperature, damper, heater, send } = createWs();
+  const { connected, temperature, damper, heater, heaters, send } = createWs();
+  const [scanning, setScanning] = createSignal(false);
 
   const setAngle = (angle: number) => send({ type: 'damper.set', angle });
   const setAuto = () => send({ type: 'damper.set', auto: true });
-  const scanHeaters = () => send({ type: 'heaters.scan', timeout: 5 });
+  const scanHeaters = () => {
+    setScanning(true);
+    send({ type: 'heaters.scan', timeout: 5 });
+    setTimeout(() => {
+      send({ type: 'heaters.list' });
+      setScanning(false);
+    }, 5500);
+  };
+  const connectHeater = (name: string) => send({ type: 'heaters.connect', name });
   const disconnectHeater = () => send({ type: 'heaters.disconnect' });
+  const refreshList = () => send({ type: 'heaters.list' });
 
   return (
     <div class="shell">
-      {/* Nav */}
       <nav class="nav">
         <div class="nav-inner">
           <span class="nav-wordmark">auto-damper</span>
@@ -25,7 +34,6 @@ export default function App() {
       </nav>
 
       <main class="main">
-        {/* Temperature Card */}
         <section class="card">
           <div class="card-header">
             <span class="card-title">Duct Temperature</span>
@@ -37,7 +45,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Damper Card */}
         <section class="card">
           <div class="card-header">
             <span class="card-title">Damper</span>
@@ -80,24 +87,15 @@ export default function App() {
           </div>
         </section>
 
-        {/* Heater Card */}
         <section class="card">
           <div class="card-header">
             <span class="card-title">Heater</span>
-            <Show when={heater()}>
-              <void-badge color={heater()!.connected ? 'success' : 'default'}>
-                {heater()!.connected ? 'Connected' : 'Disconnected'}
-              </void-badge>
+            <Show when={heater()?.connected}>
+              <void-badge color="success">Connected</void-badge>
             </Show>
           </div>
           <div class="card-body">
-            <Show when={heater()?.connected} fallback={
-              <div class="card-actions">
-                <void-button variant="filled" size="sm" onClick={scanHeaters}>
-                  Scan for Heaters
-                </void-button>
-              </div>
-            }>
+            <Show when={heater()?.connected}>
               <div class="stat-grid">
                 <div class="stat-item">
                   <div class="stat-label">Power</div>
@@ -136,6 +134,41 @@ export default function App() {
                 <void-button variant="outline" size="sm" color="error" onClick={disconnectHeater}>
                   Disconnect
                 </void-button>
+              </div>
+            </Show>
+
+            <Show when={!heater()?.connected}>
+              <div class="heater-controls">
+                <div class="card-actions">
+                  <void-button variant="filled" size="sm" onClick={scanHeaters}
+                    disabled={scanning()}>
+                    {scanning() ? 'Scanning...' : 'Scan'}
+                  </void-button>
+                  <Show when={heaters()?.devices?.length}>
+                    <void-button variant="outline" size="sm" onClick={refreshList}>
+                      Refresh
+                    </void-button>
+                  </Show>
+                </div>
+
+                <Show when={heaters()?.devices?.length}>
+                  <div class="heater-list">
+                    <For each={heaters()!.devices}>
+                      {(device) => (
+                        <div class="heater-item">
+                          <div class="heater-item-info">
+                            <span class="heater-item-name">{device.name}</span>
+                            <span class="heater-item-meta">{device.protocol} · {device.rssi} dBm</span>
+                          </div>
+                          <void-button variant="outline" size="sm"
+                            onClick={() => connectHeater(device.name)}>
+                            Connect
+                          </void-button>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
               </div>
             </Show>
           </div>
