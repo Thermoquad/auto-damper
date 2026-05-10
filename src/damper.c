@@ -5,7 +5,10 @@
 #include <zephyr/smf.h>
 #include <zephyr/zbus/zbus.h>
 
+#include <auto_damper/config.h>
 #include <auto_damper/damper.h>
+#include <auto_damper/positions.h>
+#include <auto_damper/targets.h>
 #include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(damper, LOG_LEVEL_INF);
@@ -14,48 +17,48 @@ LOG_MODULE_REGISTER(damper, LOG_LEVEL_INF);
 // Config
 //////////////////////////////////////////////////////////////
 
-static struct damper_config config = {
-    .temp_high = 80.0,
-    .temp_low = 70.0,
-    .servo_inside_deg = 0.0,
-    .servo_outside_deg = 270.0,
-    .servo_min_us = 500,
-    .servo_max_us = 2500,
-    .servo_max_deg = 270.0,
+#define NVS_ID_SERVO_CONFIG 0x0030
+#define NVS_TYPE_SERVO      0x0030
+
+static struct servo_config servo_cfg = {
+    .min_us = 500,
+    .max_us = 2500,
+    .max_deg = 270.0,
 };
 
-struct damper_config *damper_config_get(void)
+struct servo_config *servo_config_get(void)
 {
-  return &config;
+  return &servo_cfg;
 }
 
-//////////////////////////////////////////////////////////////
-// State Names
-//////////////////////////////////////////////////////////////
-
-static const char *state_names[] = {
-    [DAMPER_STATE_IDLE] = "IDLE",
-    [DAMPER_STATE_ROUTING_INSIDE] = "ROUTING_INSIDE",
-    [DAMPER_STATE_ROUTING_OUTSIDE] = "ROUTING_OUTSIDE",
-};
-
-const char *damper_state_name(enum damper_state state)
+int servo_config_save(void)
 {
-  if (state > DAMPER_STATE_ROUTING_OUTSIDE) {
-    return "UNKNOWN";
-  }
-  return state_names[state];
+  return config_save(NVS_ID_SERVO_CONFIG, NVS_TYPE_SERVO, 1,
+                     &servo_cfg, sizeof(servo_cfg));
+}
+
+int servo_config_load(void)
+{
+  uint16_t version;
+  return config_load(NVS_ID_SERVO_CONFIG, NVS_TYPE_SERVO,
+                     &version, &servo_cfg, sizeof(servo_cfg));
 }
 
 //////////////////////////////////////////////////////////////
 // State Machine Context
 //////////////////////////////////////////////////////////////
 
+enum damper_state {
+  DAMPER_STATE_AUTO,
+  DAMPER_STATE_MANUAL,
+};
+
 struct damper_ctx {
   struct smf_ctx ctx;
   double current_temp;
+  double current_angle;
+  int current_position_id;
   enum damper_mode mode;
-  enum damper_route route;
 };
 
 static struct damper_ctx s;
@@ -80,110 +83,79 @@ static const struct smf_state states[];
 static void publish_damper_data(void)
 {
   struct damper_data data = {
-      .route = s.route,
       .mode = s.mode,
-      .servo_degrees = (s.route == DAMPER_ROUTE_INSIDE)
-                           ? config.servo_inside_deg
-                           : config.servo_outside_deg,
+      .angle = s.current_angle,
+      .position_id = s.current_position_id,
       .timestamp_us = k_ticks_to_us_ceil64(k_uptime_ticks()),
   };
   zbus_chan_pub(&damper_data_chan, &data, K_MSEC(100));
 }
 
 //////////////////////////////////////////////////////////////
-// Helper: Set Servo to Route
+// Helper: Move Servo
 //////////////////////////////////////////////////////////////
 
-static void apply_route(enum damper_route route)
+static void move_to_angle(double angle, int position_id)
 {
-  s.route = route;
-
-  double deg = (route == DAMPER_ROUTE_INSIDE) ? config.servo_inside_deg
-                                              : config.servo_outside_deg;
-  int ret = servo_set_degrees(deg);
-  if (ret < 0) {
-    LOG_ERR("Failed to set servo: %d", ret);
+  if (angle == s.current_angle && position_id == s.current_position_id) {
+    return;
   }
 
-  LOG_INF("Route: %s (%.1f deg)",
-          route == DAMPER_ROUTE_INSIDE ? "INSIDE" : "OUTSIDE", deg);
+  int ret = servo_set_degrees(angle);
+  if (ret < 0) {
+    LOG_ERR("Failed to set servo: %d", ret);
+    return;
+  }
+
+  s.current_angle = angle;
+  s.current_position_id = position_id;
+
+  LOG_INF("Servo: %.1f deg (position %d)", angle, position_id);
   publish_damper_data();
 }
 
 //////////////////////////////////////////////////////////////
-// State: IDLE
+// State: AUTO
 //////////////////////////////////////////////////////////////
 
-static void idle_entry(void *ctx)
+static void auto_entry(void *ctx)
 {
-  LOG_INF("State: IDLE");
-  apply_route(DAMPER_ROUTE_OUTSIDE);
+  struct damper_ctx *d = ctx;
+  d->mode = DAMPER_MODE_AUTO;
+  LOG_INF("Mode: AUTO");
+  publish_damper_data();
 }
 
-static enum smf_state_result idle_run(void *ctx)
+static enum smf_state_result auto_run(void *ctx)
 {
   struct damper_ctx *d = ctx;
 
-  if (d->mode == DAMPER_MODE_OVERRIDE) {
-    return SMF_EVENT_HANDLED;
-  }
-
-  if (d->current_temp >= config.temp_high) {
-    smf_set_state(SMF_CTX(d), &states[DAMPER_STATE_ROUTING_INSIDE]);
-  } else if (d->current_temp > 0.0) {
-    smf_set_state(SMF_CTX(d), &states[DAMPER_STATE_ROUTING_OUTSIDE]);
+  const struct target *t = targets_find_by_temp(d->current_temp);
+  if (t) {
+    const struct position *p = positions_get(t->position_id);
+    if (p) {
+      move_to_angle(p->angle, t->position_id);
+    }
   }
 
   return SMF_EVENT_HANDLED;
 }
 
 //////////////////////////////////////////////////////////////
-// State: ROUTING_INSIDE
+// State: MANUAL
 //////////////////////////////////////////////////////////////
 
-static void routing_inside_entry(void *ctx)
-{
-  LOG_INF("State: ROUTING_INSIDE");
-  apply_route(DAMPER_ROUTE_INSIDE);
-}
-
-static enum smf_state_result routing_inside_run(void *ctx)
+static void manual_entry(void *ctx)
 {
   struct damper_ctx *d = ctx;
-
-  if (d->mode == DAMPER_MODE_OVERRIDE) {
-    return SMF_EVENT_HANDLED;
-  }
-
-  if (d->current_temp < config.temp_low) {
-    smf_set_state(SMF_CTX(d), &states[DAMPER_STATE_ROUTING_OUTSIDE]);
-  }
-
-  return SMF_EVENT_HANDLED;
+  d->mode = DAMPER_MODE_MANUAL;
+  LOG_INF("Mode: MANUAL");
+  publish_damper_data();
 }
 
-//////////////////////////////////////////////////////////////
-// State: ROUTING_OUTSIDE
-//////////////////////////////////////////////////////////////
-
-static void routing_outside_entry(void *ctx)
+static enum smf_state_result manual_run(void *ctx)
 {
-  LOG_INF("State: ROUTING_OUTSIDE");
-  apply_route(DAMPER_ROUTE_OUTSIDE);
-}
-
-static enum smf_state_result routing_outside_run(void *ctx)
-{
-  struct damper_ctx *d = ctx;
-
-  if (d->mode == DAMPER_MODE_OVERRIDE) {
-    return SMF_EVENT_HANDLED;
-  }
-
-  if (d->current_temp >= config.temp_high) {
-    smf_set_state(SMF_CTX(d), &states[DAMPER_STATE_ROUTING_INSIDE]);
-  }
-
+  ARG_UNUSED(ctx);
   return SMF_EVENT_HANDLED;
 }
 
@@ -192,14 +164,10 @@ static enum smf_state_result routing_outside_run(void *ctx)
 //////////////////////////////////////////////////////////////
 
 static const struct smf_state states[] = {
-    [DAMPER_STATE_IDLE] =
-        SMF_CREATE_STATE(idle_entry, idle_run, NULL, NULL, NULL),
-    [DAMPER_STATE_ROUTING_INSIDE] =
-        SMF_CREATE_STATE(routing_inside_entry, routing_inside_run, NULL, NULL,
-                         NULL),
-    [DAMPER_STATE_ROUTING_OUTSIDE] =
-        SMF_CREATE_STATE(routing_outside_entry, routing_outside_run, NULL, NULL,
-                         NULL),
+    [DAMPER_STATE_AUTO] =
+        SMF_CREATE_STATE(auto_entry, auto_run, NULL, NULL, NULL),
+    [DAMPER_STATE_MANUAL] =
+        SMF_CREATE_STATE(manual_entry, manual_run, NULL, NULL, NULL),
 };
 
 //////////////////////////////////////////////////////////////
@@ -223,39 +191,23 @@ static void command_callback(const struct zbus_channel *chan)
 
   switch (cmd->type) {
   case DAMPER_CMD_SET_AUTO:
-    s.mode = DAMPER_MODE_AUTO;
-    LOG_INF("Mode: AUTO");
-    /* Re-evaluate routing based on current temperature so the state
-     * machine exits any override-held state immediately. */
-    if (s.current_temp >= config.temp_high) {
-      smf_set_state(SMF_CTX(&s), &states[DAMPER_STATE_ROUTING_INSIDE]);
+    smf_set_state(SMF_CTX(&s), &states[DAMPER_STATE_AUTO]);
+    break;
+
+  case DAMPER_CMD_SET_POSITION: {
+    const struct position *p = positions_get(cmd->position_id);
+    if (p) {
+      smf_set_state(SMF_CTX(&s), &states[DAMPER_STATE_MANUAL]);
+      move_to_angle(p->angle, cmd->position_id);
     } else {
-      smf_set_state(SMF_CTX(&s), &states[DAMPER_STATE_ROUTING_OUTSIDE]);
+      LOG_WRN("Unknown position %d", cmd->position_id);
     }
     break;
-  case DAMPER_CMD_OVERRIDE_INSIDE:
-    s.mode = DAMPER_MODE_OVERRIDE;
-    apply_route(DAMPER_ROUTE_INSIDE);
-    break;
-  case DAMPER_CMD_OVERRIDE_OUTSIDE:
-    s.mode = DAMPER_MODE_OVERRIDE;
-    apply_route(DAMPER_ROUTE_OUTSIDE);
-    break;
-  case DAMPER_CMD_SET_TEMP_HIGH:
-    config.temp_high = cmd->value;
-    LOG_INF("temp_high = %.1f", config.temp_high);
-    break;
-  case DAMPER_CMD_SET_TEMP_LOW:
-    config.temp_low = cmd->value;
-    LOG_INF("temp_low = %.1f", config.temp_low);
-    break;
-  case DAMPER_CMD_SET_SERVO_INSIDE:
-    config.servo_inside_deg = cmd->value;
-    LOG_INF("servo_inside = %.1f deg", config.servo_inside_deg);
-    break;
-  case DAMPER_CMD_SET_SERVO_OUTSIDE:
-    config.servo_outside_deg = cmd->value;
-    LOG_INF("servo_outside = %.1f deg", config.servo_outside_deg);
+  }
+
+  case DAMPER_CMD_SET_ANGLE:
+    smf_set_state(SMF_CTX(&s), &states[DAMPER_STATE_MANUAL]);
+    move_to_angle(cmd->angle, -1);
     break;
   }
 
@@ -275,15 +227,15 @@ ZBUS_CHAN_DEFINE(damper_command_chan,
                 struct damper_command,
                 NULL, NULL,
                 ZBUS_OBSERVERS(damper_cmd_listener),
-                ZBUS_MSG_INIT(.type = DAMPER_CMD_SET_AUTO, .value = 0.0));
+                ZBUS_MSG_INIT(.type = DAMPER_CMD_SET_AUTO,
+                              .position_id = -1, .angle = 0.0));
 
 ZBUS_CHAN_DEFINE(damper_data_chan,
                 struct damper_data,
                 NULL, NULL,
                 ZBUS_OBSERVERS_EMPTY,
-                ZBUS_MSG_INIT(.route = DAMPER_ROUTE_OUTSIDE,
-                              .mode = DAMPER_MODE_AUTO,
-                              .servo_degrees = 0.0,
+                ZBUS_MSG_INIT(.mode = DAMPER_MODE_AUTO,
+                              .angle = 0.0, .position_id = -1,
                               .timestamp_us = 0));
 
 //////////////////////////////////////////////////////////////
@@ -302,8 +254,13 @@ void damper_thread(void *p1, void *p2, void *p3)
     return;
   }
 
-  smf_set_initial(SMF_CTX(&s), &states[DAMPER_STATE_IDLE]);
-  s.mode = DAMPER_MODE_AUTO;
+  if (config_exists(NVS_ID_SERVO_CONFIG) > 0) {
+    servo_config_load();
+  }
+
+  s.current_angle = -1.0;
+  s.current_position_id = -1;
+  smf_set_initial(SMF_CTX(&s), &states[DAMPER_STATE_AUTO]);
 
   LOG_INF("Damper controller started");
 

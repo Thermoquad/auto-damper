@@ -22,17 +22,14 @@ ZBUS_CHAN_DECLARE(temperature_data_chan);
 
 enum damper_command_type {
   DAMPER_CMD_SET_AUTO,
-  DAMPER_CMD_OVERRIDE_INSIDE,
-  DAMPER_CMD_OVERRIDE_OUTSIDE,
-  DAMPER_CMD_SET_TEMP_HIGH,
-  DAMPER_CMD_SET_TEMP_LOW,
-  DAMPER_CMD_SET_SERVO_INSIDE,
-  DAMPER_CMD_SET_SERVO_OUTSIDE,
+  DAMPER_CMD_SET_POSITION,
+  DAMPER_CMD_SET_ANGLE,
 };
 
 struct damper_command {
   enum damper_command_type type;
-  double value;
+  int position_id;
+  double angle;
 };
 
 ZBUS_CHAN_DECLARE(damper_command_chan);
@@ -41,20 +38,15 @@ ZBUS_CHAN_DECLARE(damper_command_chan);
 // Damper Data Channel
 //////////////////////////////////////////////////////////////
 
-enum damper_route {
-  DAMPER_ROUTE_INSIDE,
-  DAMPER_ROUTE_OUTSIDE,
-};
-
 enum damper_mode {
   DAMPER_MODE_AUTO,
-  DAMPER_MODE_OVERRIDE,
+  DAMPER_MODE_MANUAL,
 };
 
 struct damper_data {
-  enum damper_route route;
   enum damper_mode mode;
-  double servo_degrees;
+  double angle;
+  int position_id;
   int64_t timestamp_us;
 };
 

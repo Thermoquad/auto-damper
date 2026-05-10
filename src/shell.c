@@ -8,6 +8,8 @@
 #include <zephyr/zbus/zbus.h>
 
 #include <auto_damper/damper.h>
+#include <auto_damper/positions.h>
+#include <auto_damper/targets.h>
 #include <auto_damper/zbus.h>
 #include <zephyr/bluetooth/addr.h>
 #include <auto_damper/heater.h>
@@ -55,7 +57,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
 
-  struct damper_config *cfg = damper_config_get();
+  struct servo_config *cfg = servo_config_get();
 
   struct temperature_data temp;
   zbus_chan_read(&temperature_data_chan, &temp, PUB_TIMEOUT);
@@ -65,85 +67,80 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 
   shell_print(sh, "Damper Status:");
   shell_print(sh, "  Duct temp:     %.1f C", temp.celsius);
-  shell_print(sh, "  Route:         %s",
-              data.route == DAMPER_ROUTE_INSIDE ? "INSIDE" : "OUTSIDE");
   shell_print(sh, "  Mode:          %s",
-              data.mode == DAMPER_MODE_AUTO ? "AUTO" : "OVERRIDE");
-  shell_print(sh, "  Servo:         %.1f deg", data.servo_degrees);
-  shell_print(sh, "Config:");
-  shell_print(sh, "  temp_high:     %.1f C", cfg->temp_high);
-  shell_print(sh, "  temp_low:      %.1f C", cfg->temp_low);
-  shell_print(sh, "  servo_inside:  %.1f deg", cfg->servo_inside_deg);
-  shell_print(sh, "  servo_outside: %.1f deg", cfg->servo_outside_deg);
-  shell_print(sh, "  servo_min_us:  %u", cfg->servo_min_us);
-  shell_print(sh, "  servo_max_us:  %u", cfg->servo_max_us);
+              data.mode == DAMPER_MODE_AUTO ? "AUTO" : "MANUAL");
+  shell_print(sh, "  Angle:         %.1f deg", data.angle);
+  shell_print(sh, "  Position:      %d", data.position_id);
+  shell_print(sh, "Servo Config:");
+  shell_print(sh, "  min_us:        %u", cfg->min_us);
+  shell_print(sh, "  max_us:        %u", cfg->max_us);
+  shell_print(sh, "  max_deg:       %.1f", cfg->max_deg);
+  shell_print(sh, "Positions: %d configured", positions_count());
+  shell_print(sh, "Targets:   %d configured", targets_count());
 
   return 0;
 }
 
 //////////////////////////////////////////////////////////////
-// damper set <param> <value>
+// damper auto
 //////////////////////////////////////////////////////////////
 
-static int cmd_set(const struct shell *sh, size_t argc, char **argv)
+static int cmd_auto(const struct shell *sh, size_t argc, char **argv)
 {
-  if (argc != 3) {
-    shell_error(sh, "Usage: damper set <param> <value>");
-    return -EINVAL;
-  }
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
 
-  const char *param = argv[1];
-  double value = strtod(argv[2], NULL);
-  struct damper_command cmd;
-
-  if (strcmp(param, "temp_high") == 0) {
-    cmd.type = DAMPER_CMD_SET_TEMP_HIGH;
-  } else if (strcmp(param, "temp_low") == 0) {
-    cmd.type = DAMPER_CMD_SET_TEMP_LOW;
-  } else if (strcmp(param, "servo_inside") == 0) {
-    cmd.type = DAMPER_CMD_SET_SERVO_INSIDE;
-  } else if (strcmp(param, "servo_outside") == 0) {
-    cmd.type = DAMPER_CMD_SET_SERVO_OUTSIDE;
-  } else {
-    shell_error(sh, "Unknown param: %s", param);
-    shell_print(sh, "Params: temp_high, temp_low, servo_inside, servo_outside");
-    return -EINVAL;
-  }
-
-  cmd.value = value;
+  struct damper_command cmd = {.type = DAMPER_CMD_SET_AUTO};
   zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
-  shell_print(sh, "Set %s = %.1f", param, value);
-
+  shell_print(sh, "Mode: AUTO");
   return 0;
 }
 
 //////////////////////////////////////////////////////////////
-// damper override <inside|outside|auto>
+// damper position <id>
 //////////////////////////////////////////////////////////////
 
-static int cmd_override(const struct shell *sh, size_t argc, char **argv)
+static int cmd_position(const struct shell *sh, size_t argc, char **argv)
 {
   if (argc != 2) {
-    shell_error(sh, "Usage: damper override <inside|outside|auto>");
+    shell_error(sh, "Usage: damper position <id>");
     return -EINVAL;
   }
 
-  struct damper_command cmd;
-
-  if (strcmp(argv[1], "inside") == 0) {
-    cmd.type = DAMPER_CMD_OVERRIDE_INSIDE;
-  } else if (strcmp(argv[1], "outside") == 0) {
-    cmd.type = DAMPER_CMD_OVERRIDE_OUTSIDE;
-  } else if (strcmp(argv[1], "auto") == 0) {
-    cmd.type = DAMPER_CMD_SET_AUTO;
-  } else {
-    shell_error(sh, "Unknown mode: %s (use inside, outside, or auto)", argv[1]);
+  int id = atoi(argv[1]);
+  const struct position *p = positions_get(id);
+  if (!p) {
+    shell_error(sh, "Position %d not configured", id);
     return -EINVAL;
   }
 
-  cmd.value = 0.0;
+  struct damper_command cmd = {
+      .type = DAMPER_CMD_SET_POSITION,
+      .position_id = id,
+  };
   zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
+  shell_print(sh, "Moving to position %d (\"%s\", %.1f deg)", id, p->label, p->angle);
+  return 0;
+}
 
+//////////////////////////////////////////////////////////////
+// damper angle <degrees>
+//////////////////////////////////////////////////////////////
+
+static int cmd_angle(const struct shell *sh, size_t argc, char **argv)
+{
+  if (argc != 2) {
+    shell_error(sh, "Usage: damper angle <degrees>");
+    return -EINVAL;
+  }
+
+  double angle = strtod(argv[1], NULL);
+  struct damper_command cmd = {
+      .type = DAMPER_CMD_SET_ANGLE,
+      .angle = angle,
+  };
+  zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
+  shell_print(sh, "Moving to %.1f deg (manual)", angle);
   return 0;
 }
 
@@ -747,9 +744,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 SHELL_STATIC_SUBCMD_SET_CREATE(
     damper_cmds,
     SHELL_CMD(status, NULL, "Show damper status and config", cmd_status),
-    SHELL_CMD(set, NULL, "Set config: damper set <param> <value>", cmd_set),
-    SHELL_CMD(override, NULL, "Override: damper override <inside|outside|auto>",
-              cmd_override),
+    SHELL_CMD(auto, NULL, "Switch to auto mode", cmd_auto),
+    SHELL_CMD_ARG(position, NULL, "Move to position: damper position <id>",
+                  cmd_position, 2, 0),
+    SHELL_CMD_ARG(angle, NULL, "Move to angle: damper angle <degrees>",
+                  cmd_angle, 2, 0),
     SHELL_CMD(ble, &ble_cmds, "BLE heater commands", NULL),
     SHELL_CMD(wifi, &wifi_cmds, "WiFi commands", NULL),
     SHELL_CMD(test, NULL, "Run WiFi+BLE coex test", cmd_test_wifi_ble),

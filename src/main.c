@@ -7,9 +7,11 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/zbus/zbus.h>
 
-#include <auto_damper/damper.h>
-#include <auto_damper/zbus.h>
 #include <auto_damper/config.h>
+#include <auto_damper/damper.h>
+#include <auto_damper/positions.h>
+#include <auto_damper/targets.h>
+#include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
@@ -101,11 +103,11 @@ K_THREAD_DEFINE(damper_thread_id, DAMPER_STACK_SIZE,
 
 static uint32_t degrees_to_pulse_ns(double degrees)
 {
-  struct damper_config *cfg = damper_config_get();
+  struct servo_config *cfg = servo_config_get();
 
-  double fraction = degrees / cfg->servo_max_deg;
-  double pulse_us = cfg->servo_min_us +
-                    fraction * (cfg->servo_max_us - cfg->servo_min_us);
+  double fraction = degrees / cfg->max_deg;
+  double pulse_us = cfg->min_us +
+                    fraction * (cfg->max_us - cfg->min_us);
 
   return (uint32_t)(pulse_us * 1000);
 }
@@ -132,5 +134,9 @@ int main(void)
   if (rc) {
     LOG_ERR("Config init failed: %d", rc);
   }
+
+  positions_init();
+  targets_init();
+
   return 0;
 }
