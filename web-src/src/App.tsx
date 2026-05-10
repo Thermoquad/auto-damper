@@ -47,16 +47,17 @@ export default function App() {
     send({ type: 'heater.command', ...cmd });
   const heaterError = (code: number): string => {
     const errors: Record<number, string> = {
-      1: 'Overheat', 2: 'Ignition failure', 3: 'Flame out',
-      4: 'Glow plug fault', 5: 'Fuel pump fault', 6: 'No fan RPM',
-      7: 'Sensor fault', 8: 'Low voltage', 9: 'High voltage',
-      10: 'Oil pump fault',
+      2: 'Voltage fault', 3: 'Glow plug fault', 4: 'Fuel pump fault',
+      5: 'High temperature', 6: 'Fan/motor fault', 7: 'Communication fault',
+      8: 'Flame-out', 9: 'Temp sensor fault', 10: 'Failed to start',
+      11: 'CO alarm',
     };
     return errors[code] ?? `Fault ${code}`;
   };
   const setPower = (on: boolean) => heaterCmd({ power: on });
   const setMode = (mode: string) => heaterCmd({ mode });
   const setTemp = (temp: number) => heaterCmd({ temp: Math.max(8, Math.min(36, temp)) });
+  const adjustPower = (delta: number) => heaterCmd({ power_level: delta });
 
   return (
     <div class="shell">
@@ -177,7 +178,7 @@ export default function App() {
                   <div class="stat-sm">{heater()!.mode}</div>
                 </div>
                 <div class="stat-item">
-                  <div class="stat-label">Exhaust</div>
+                  <div class="stat-label">Core</div>
                   <div class="stat-sm">{heater()!.exhaust_temp.toFixed(1)}°C</div>
                 </div>
                 <div class="stat-item">
@@ -240,6 +241,20 @@ export default function App() {
                     <span class="temp-display">{heater()!.target_temp}°C</span>
                     <void-button variant="outline" size="sm"
                       onClick={() => setTemp(heater()!.target_temp + 1)}>
+                      +
+                    </void-button>
+                  </div>
+                </div>
+                <div class="control-group">
+                  <div class="stat-label">Power Level</div>
+                  <div class="control-row">
+                    <void-button variant="outline" size="sm"
+                      onClick={() => adjustPower(-1)}>
+                      −
+                    </void-button>
+                    <span class="temp-display">{heater()!.power_level}</span>
+                    <void-button variant="outline" size="sm"
+                      onClick={() => adjustPower(1)}>
                       +
                     </void-button>
                   </div>
