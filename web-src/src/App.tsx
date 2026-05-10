@@ -45,6 +45,15 @@ export default function App() {
   const disconnectHeater = () => send({ type: 'heaters.disconnect' });
   const heaterCmd = (cmd: Record<string, unknown>) =>
     send({ type: 'heater.command', ...cmd });
+  const heaterError = (code: number): string => {
+    const errors: Record<number, string> = {
+      1: 'Overheat', 2: 'Ignition failure', 3: 'Flame out',
+      4: 'Glow plug fault', 5: 'Fuel pump fault', 6: 'No fan RPM',
+      7: 'Sensor fault', 8: 'Low voltage', 9: 'High voltage',
+      10: 'Oil pump fault',
+    };
+    return errors[code] ?? `Fault ${code}`;
+  };
   const setPower = (on: boolean) => heaterCmd({ power: on });
   const setMode = (mode: string) => heaterCmd({ mode });
   const setTemp = (temp: number) => heaterCmd({ temp: Math.max(8, Math.min(36, temp)) });
@@ -148,6 +157,12 @@ export default function App() {
                 {heaters()?.devices?.length ? 'Select a heater' : 'Scan to discover heaters'}
               </div>
             }>
+              <Show when={heater()!.error}>
+                <div class="heater-error">
+                  <void-badge color="error">E{heater()!.error}</void-badge>
+                  <span>{heaterError(heater()!.error)}</span>
+                </div>
+              </Show>
               <div class="stat-grid">
                 <div class="stat-item">
                   <div class="stat-label">Power</div>

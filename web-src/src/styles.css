@@ -142,6 +142,20 @@ body {
   font-family: var(--void-font-sans);
 }
 
+/* Heater Error */
+.heater-error {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-3);
+  padding: var(--void-space-3) var(--void-space-4);
+  margin-bottom: var(--void-space-4);
+  border: 1px solid var(--void-color-error, #ef4444);
+  border-radius: var(--void-radius-md);
+  background: color-mix(in srgb, var(--void-color-error, #ef4444) 10%, transparent);
+  font-size: var(--void-text-sm);
+  font-weight: var(--void-weight-semibold);
+}
+
 /* Heater Controls */
 .heater-controls-bar {
   display: flex;
