@@ -58,6 +58,7 @@ ZBUS_CHAN_DECLARE(damper_data_chan);
 
 enum heater_cmd_type {
   HEATER_CMD_SCAN,
+  HEATER_CMD_SCAN_STOP,
   HEATER_CMD_CONNECT,
   HEATER_CMD_DISCONNECT,
   HEATER_CMD_POWER,
@@ -79,6 +80,26 @@ struct heater_command {
 };
 
 ZBUS_CHAN_DECLARE(heater_command_chan);
+
+//////////////////////////////////////////////////////////////
+// Heater Devices Channel
+//////////////////////////////////////////////////////////////
+
+#define HEATER_DEVICES_MAX 8
+
+struct heater_device_info {
+  char name[32];
+  int8_t rssi;
+  char protocol[12];
+};
+
+struct heater_devices {
+  struct heater_device_info devices[HEATER_DEVICES_MAX];
+  int count;
+  int connected_index;
+};
+
+ZBUS_CHAN_DECLARE(heater_devices_chan);
 
 //////////////////////////////////////////////////////////////
 // Heater Data Channel

@@ -42,6 +42,7 @@ struct heater_data {
   int target_temp;
   int power_level;
   bool connected;
+  char name[32];
   int64_t timestamp_us;
 };
 

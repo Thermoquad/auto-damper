@@ -87,12 +87,32 @@ ZBUS_CHAN_DEFINE(heater_data_chan, struct heater_data, NULL, NULL,
                               .step = HEATER_STEP_IDLE, .connected = false,
                               .timestamp_us = 0));
 
+ZBUS_CHAN_DEFINE(heater_devices_chan, struct heater_devices, NULL, NULL,
+                ZBUS_OBSERVERS_EMPTY,
+                ZBUS_MSG_INIT(.count = 0, .connected_index = -1));
+
 static void heater_cmd_callback(const struct zbus_channel *chan);
 ZBUS_LISTENER_DEFINE(heater_cmd_listener, heater_cmd_callback);
 
 ZBUS_CHAN_DEFINE(heater_command_chan, struct heater_command, NULL, NULL,
                 ZBUS_OBSERVERS(heater_cmd_listener),
                 ZBUS_MSG_INIT(.type = HEATER_CMD_DISCONNECT));
+
+static void publish_devices(void)
+{
+  struct heater_devices msg = {.count = scan_count, .connected_index = connected_index};
+
+  for (int i = 0; i < scan_count && i < HEATER_DEVICES_MAX; i++) {
+    strncpy(msg.devices[i].name, scan_results[i].name,
+            sizeof(msg.devices[i].name) - 1);
+    msg.devices[i].rssi = scan_results[i].rssi;
+    if (scan_results[i].protocol) {
+      strncpy(msg.devices[i].protocol, scan_results[i].protocol->name,
+              sizeof(msg.devices[i].protocol) - 1);
+    }
+  }
+  zbus_chan_pub(&heater_devices_chan, &msg, K_NO_WAIT);
+}
 
 //////////////////////////////////////////////////////////////
 // Heartbeat
@@ -171,6 +191,10 @@ static uint8_t notify_cb(struct bt_conn *conn,
 
   if (ret == 0) {
     hdata.timestamp_us = k_ticks_to_us_ceil64(k_uptime_ticks());
+    if (connected_index >= 0 && connected_index < scan_count) {
+      strncpy(hdata.name, scan_results[connected_index].name,
+              sizeof(hdata.name) - 1);
+    }
     zbus_chan_pub(&heater_data_chan, &hdata, K_MSEC(100));
   } else {
     LOG_DBG("Decode failed: %d (len=%u)", ret, length);
@@ -337,8 +361,8 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
   notify_handle = 0;
 
   struct heater_data hdata = {.connected = false};
-
   zbus_chan_pub(&heater_data_chan, &hdata, K_MSEC(100));
+  publish_devices();
 
   if (auto_reconnect && connected_index >= 0) {
     LOG_INF("Will reconnect in %d ms", RECONNECT_DELAY_MS);
@@ -438,6 +462,7 @@ static void scan_timeout_handler(struct k_work *work)
     bt_le_scan_stop();
     scanning = false;
     LOG_INF("Scan complete: %d device(s) found", scan_count);
+    publish_devices();
   }
 }
 
@@ -503,6 +528,7 @@ int heater_ble_scan_stop(void)
   bt_le_scan_stop();
   scanning = false;
   LOG_INF("Scan stopped: %d device(s)", scan_count);
+  publish_devices();
   return 0;
 }
 
@@ -540,6 +566,7 @@ int heater_ble_connect(int index)
 
   connected_index = index;
   auto_reconnect = true;
+  publish_devices();
 
   LOG_INF("Connecting to %s (%s)...", r->name, active_protocol->name);
   return 0;
@@ -703,6 +730,9 @@ static void heater_cmd_callback(const struct zbus_channel *chan)
   switch (cmd->type) {
   case HEATER_CMD_SCAN:
     heater_ble_scan(cmd->scan_timeout);
+    break;
+  case HEATER_CMD_SCAN_STOP:
+    heater_ble_scan_stop();
     break;
   case HEATER_CMD_CONNECT:
     heater_ble_connect(cmd->connect_index);
