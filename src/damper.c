@@ -330,7 +330,8 @@ void damper_thread(void *p1, void *p2, void *p3)
             damper_cfg.heater_name[0] ? damper_cfg.heater_name : "(none)");
   }
 
-  s.current_angle = -1.0;
+  servo_set_degrees(damper_cfg.outside_angle);
+  s.current_angle = damper_cfg.outside_angle;
   s.route = DAMPER_ROUTE_OUTSIDE;
   smf_set_initial(SMF_CTX(&s), &states[DAMPER_STATE_AUTO]);
 
