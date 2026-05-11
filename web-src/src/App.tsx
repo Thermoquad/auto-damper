@@ -1,6 +1,6 @@
 import { Show, For, createSignal, createEffect } from 'solid-js';
 import '@voidable/ui';
-import { createWs, type PositionsMsg, type TargetsMsg } from './ws';
+import { createWs, type HeaterDevice } from './ws';
 
 export default function App() {
   const { connected, temperature, damper, heater, heaters, positions, setPositions, targets, setTargets, lastResult, send, sendCmd } = createWs();
@@ -8,19 +8,57 @@ export default function App() {
   const [localAngle, setLocalAngle] = createSignal(0);
   const [configError, setConfigError] = createSignal<string | null>(null);
   const [damperTab, setDamperTab] = createSignal<'control' | 'ranges'>('control');
-  let selectRef: HTMLElement | undefined;
-
-  const selectedHeater = () => heater()?.connected ? heater()!.name ?? '' : '';
+  const [selectedName, setSelectedName] = createSignal('');
+  const [knownDevices, setKnownDevices] = createSignal<HeaterDevice[]>([]);
+  let heaterSelectRef: HTMLElement | undefined;
 
   createEffect(() => {
-    const val = selectedHeater();
-    if (selectRef) {
-      const inner = selectRef.querySelector('select') as HTMLSelectElement | null;
-      if (inner && inner.value !== val) {
-        inner.value = val;
+    const hs = heaters();
+    if (!hs?.devices?.length) return;
+    setKnownDevices(prev => {
+      const known = new Map(prev.map(d => [d.name, d]));
+      for (const d of hs.devices) {
+        known.set(d.name, d);
       }
+      return Array.from(known.values());
+    });
+  });
+
+  createEffect(() => {
+    const h = heater();
+    if (h?.connected && h.name) {
+      setSelectedName(h.name);
     }
   });
+
+  createEffect(() => {
+    const devices = knownDevices();
+    if (devices.length && !selectedName()) {
+      setSelectedName(devices[0].name);
+    }
+  });
+
+  createEffect(() => {
+    const devices = knownDevices();
+    const selected = selectedName();
+    if (!heaterSelectRef) return;
+    const el = heaterSelectRef as any;
+    const sync = () => {
+      const inner = el.querySelector('select') as HTMLSelectElement;
+      if (!inner) return;
+      inner.replaceChildren(...devices.map(d => {
+        const opt = document.createElement('option');
+        opt.value = d.name;
+        opt.textContent = `${d.name} (${d.protocol})`;
+        return opt;
+      }));
+      if (selected) inner.value = selected;
+    };
+    if (el.updateComplete) el.updateComplete.then(sync);
+    else queueMicrotask(sync);
+  });
+
+  const heaterConnected = () => heater()?.connected && heater()!.name === selectedName();
 
   createEffect(() => {
     if (!sliding() && damper()) {
@@ -47,20 +85,6 @@ export default function App() {
     }
   };
   const setAuto = () => send({ type: 'damper.set', auto: true });
-  const selectHeater = (name: string) => {
-    if (!name) {
-      send({ type: 'heaters.disconnect' });
-      return;
-    }
-    if (heater()?.connected && heater()!.name === name) return;
-    if (heater()?.connected) {
-      send({ type: 'heaters.disconnect' });
-      setTimeout(() => send({ type: 'heaters.connect', name }), 300);
-    } else {
-      send({ type: 'heaters.connect', name });
-    }
-  };
-  const disconnectHeater = () => send({ type: 'heaters.disconnect' });
   const heaterCmd = (cmd: Record<string, unknown>) =>
     send({ type: 'heater.command', ...cmd });
   const heaterError = (code: number): string => {
@@ -82,6 +106,7 @@ export default function App() {
     send({ type: 'positions.list' });
     send({ type: 'targets.list' });
     send({ type: 'heaters.list' });
+    send({ type: 'heater.status' });
   };
   createEffect(() => { if (connected()) loadConfig(); });
 
@@ -324,136 +349,128 @@ export default function App() {
         <section class="card">
           <div class="card-header">
             <span class="card-title">Heater</span>
-            <Show when={heaters()?.devices?.length}>
+            <Show when={knownDevices().length}>
               <void-select size="sm"
-                ref={selectRef}
-                value={selectedHeater()}
-                placeholder="Select heater"
-                onChange={(e: Event) => selectHeater((e.target as HTMLSelectElement).value)}>
-                <option value="">None</option>
-                <For each={heaters()!.devices}>
-                  {(device) => (
-                    <option value={device.name}>
-                      {device.name} ({device.protocol})
-                    </option>
-                  )}
-                </For>
-              </void-select>
+                ref={heaterSelectRef}
+                onChange={(e: Event) => setSelectedName((e.target as HTMLSelectElement).value)}
+              />
             </Show>
           </div>
           <div class="card-body">
-            <Show when={heater()?.connected} fallback={
+            <Show when={selectedName()} fallback={
               <div class="stat-value heater-placeholder">
-                {heaters()?.devices?.length ? 'Select a heater' : 'Searching for heaters...'}
+                Searching for heaters...
               </div>
             }>
-              <Show when={heater()!.error}>
+              <Show when={heaterConnected() && heater()!.error}>
                 <div class="heater-error">
                   <void-badge color="error">E{heater()!.error}</void-badge>
                   <span>{heaterError(heater()!.error)}</span>
                 </div>
               </Show>
-              <div class="stat-grid">
-                <div class="stat-item">
-                  <div class="stat-label">Power</div>
-                  <div class="stat-sm">{heater()!.power}</div>
+              <Show when={heaterConnected()} fallback={
+                <div class="heater-disconnected">
+                  <void-badge color="error">Disconnected</void-badge>
+                  <span>{selectedName()}</span>
                 </div>
-                <div class="stat-item">
-                  <div class="stat-label">Step</div>
-                  <div class="stat-sm">{heater()!.step}</div>
-                </div>
-                <div class="stat-item">
-                  <div class="stat-label">Mode</div>
-                  <div class="stat-sm">{heater()!.mode}</div>
-                </div>
-                <div class="stat-item">
-                  <div class="stat-label">Core</div>
-                  <div class="stat-sm">{heater()!.exhaust_temp.toFixed(1)}°C</div>
-                </div>
-                <div class="stat-item">
-                  <div class="stat-label">Ambient</div>
-                  <div class="stat-sm">{heater()!.ambient_temp.toFixed(1)}°C</div>
-                </div>
-                <div class="stat-item">
-                  <div class="stat-label">Voltage</div>
-                  <div class="stat-sm">{heater()!.voltage.toFixed(1)}V</div>
-                </div>
-                <div class="stat-item">
-                  <div class="stat-label">Target</div>
-                  <div class="stat-sm">{heater()!.target_temp}°C</div>
-                </div>
-                <div class="stat-item">
-                  <div class="stat-label">Power Lvl</div>
-                  <div class="stat-sm">{heater()!.power_level}</div>
-                </div>
-              </div>
-              <div class="heater-controls-bar">
-                <div class="control-group">
-                  <div class="stat-label">Power</div>
-                  <div class="control-row">
-                    <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
-                      size="sm" color="success"
-                      onClick={() => setPower(true)}>
-                      On
-                    </void-button>
-                    <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
-                      size="sm" color="error"
-                      onClick={() => setPower(false)}>
-                      Off
-                    </void-button>
+              }>
+                <div class="stat-grid">
+                  <div class="stat-item">
+                    <div class="stat-label">Power</div>
+                    <div class="stat-sm">{heater()!.power}</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Step</div>
+                    <div class="stat-sm">{heater()!.step}</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Mode</div>
+                    <div class="stat-sm">{heater()!.mode}</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Core</div>
+                    <div class="stat-sm">{heater()!.exhaust_temp.toFixed(1)}°C</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Ambient</div>
+                    <div class="stat-sm">{heater()!.ambient_temp.toFixed(1)}°C</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Voltage</div>
+                    <div class="stat-sm">{heater()!.voltage.toFixed(1)}V</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Target</div>
+                    <div class="stat-sm">{heater()!.target_temp}°C</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Power Lvl</div>
+                    <div class="stat-sm">{heater()!.power_level}</div>
                   </div>
                 </div>
-                <div class="control-group">
-                  <div class="stat-label">Mode</div>
-                  <div class="control-row">
-                    <void-button variant="outline" size="sm"
-                      onClick={() => setMode('manual')}>
-                      Manual
-                    </void-button>
-                    <void-button variant="outline" size="sm"
-                      onClick={() => setMode('automatic')}>
-                      Auto
-                    </void-button>
-                    <void-button variant="outline" size="sm"
-                      onClick={() => setMode('fan')}>
-                      Fan
-                    </void-button>
+                <div class="heater-controls-bar">
+                  <div class="control-group">
+                    <div class="stat-label">Power</div>
+                    <div class="control-row">
+                      <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
+                        size="sm" color="success"
+                        onClick={() => setPower(true)}>
+                        On
+                      </void-button>
+                      <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
+                        size="sm" color="error"
+                        onClick={() => setPower(false)}>
+                        Off
+                      </void-button>
+                    </div>
+                  </div>
+                  <div class="control-group">
+                    <div class="stat-label">Mode</div>
+                    <div class="control-row">
+                      <void-button variant="outline" size="sm"
+                        onClick={() => setMode('manual')}>
+                        Manual
+                      </void-button>
+                      <void-button variant="outline" size="sm"
+                        onClick={() => setMode('automatic')}>
+                        Auto
+                      </void-button>
+                      <void-button variant="outline" size="sm"
+                        onClick={() => setMode('fan')}>
+                        Fan
+                      </void-button>
+                    </div>
+                  </div>
+                  <div class="control-group">
+                    <div class="stat-label">Target Temp</div>
+                    <div class="control-row">
+                      <void-button variant="outline" size="sm"
+                        onClick={() => setTemp(heater()!.target_temp - 1)}>
+                        −
+                      </void-button>
+                      <span class="temp-display">{heater()!.target_temp}°C</span>
+                      <void-button variant="outline" size="sm"
+                        onClick={() => setTemp(heater()!.target_temp + 1)}>
+                        +
+                      </void-button>
+                    </div>
+                  </div>
+                  <div class="control-group">
+                    <div class="stat-label">Power Level</div>
+                    <div class="control-row">
+                      <void-button variant="outline" size="sm"
+                        onClick={() => adjustPower(-1)}>
+                        −
+                      </void-button>
+                      <span class="temp-display">{heater()!.power_level}</span>
+                      <void-button variant="outline" size="sm"
+                        onClick={() => adjustPower(1)}>
+                        +
+                      </void-button>
+                    </div>
                   </div>
                 </div>
-                <div class="control-group">
-                  <div class="stat-label">Target Temp</div>
-                  <div class="control-row">
-                    <void-button variant="outline" size="sm"
-                      onClick={() => setTemp(heater()!.target_temp - 1)}>
-                      −
-                    </void-button>
-                    <span class="temp-display">{heater()!.target_temp}°C</span>
-                    <void-button variant="outline" size="sm"
-                      onClick={() => setTemp(heater()!.target_temp + 1)}>
-                      +
-                    </void-button>
-                  </div>
-                </div>
-                <div class="control-group">
-                  <div class="stat-label">Power Level</div>
-                  <div class="control-row">
-                    <void-button variant="outline" size="sm"
-                      onClick={() => adjustPower(-1)}>
-                      −
-                    </void-button>
-                    <span class="temp-display">{heater()!.power_level}</span>
-                    <void-button variant="outline" size="sm"
-                      onClick={() => adjustPower(1)}>
-                      +
-                    </void-button>
-                  </div>
-                </div>
-              </div>
-              <div class="card-actions">
-                <void-button variant="outline" size="sm" color="error" onClick={disconnectHeater}>
-                  Disconnect
-                </void-button>
-              </div>
+              </Show>
             </Show>
           </div>
         </section>

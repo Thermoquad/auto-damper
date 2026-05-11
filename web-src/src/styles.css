@@ -142,6 +142,19 @@ body {
   font-family: var(--void-font-sans);
 }
 
+/* Heater Disconnected */
+.heater-disconnected {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-3);
+  padding: var(--void-space-3) var(--void-space-4);
+  border-radius: var(--void-radius-md);
+  border: 1px solid var(--void-color-text-muted);
+  background: color-mix(in srgb, var(--void-color-text-muted) 10%, transparent);
+  font-size: var(--void-text-sm);
+  font-weight: var(--void-weight-semibold);
+}
+
 /* Heater Error */
 .heater-error {
   display: flex;
