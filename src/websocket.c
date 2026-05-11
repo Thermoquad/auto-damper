@@ -505,6 +505,29 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     ws_send_to(slot, ws_cmd_buf, len);
     return;
 
+  } else if (strcmp(type, "heater.status") == 0) {
+    struct heater_data data;
+    zbus_chan_read(&heater_data_chan, &data, K_NO_WAIT);
+    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
+        "{\"type\":\"heater\","
+        "\"name\":%s%s%s,"
+        "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
+        "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
+        "\"voltage\":%.1f,\"target_temp\":%d,"
+        "\"power_level\":%d,\"error\":%d,\"connected\":%s}",
+        data.name[0] ? "\"" : "",
+        data.name[0] ? data.name : "null",
+        data.name[0] ? "\"" : "",
+        heater_power_state_str(data.power),
+        heater_run_step_str(data.step),
+        heater_run_mode_str(data.mode),
+        data.exhaust_temp_c, data.ambient_temp_c,
+        data.voltage, data.target_temp,
+        data.power_level, data.error_code,
+        data.connected ? "true" : "false");
+    ws_send_to(slot, ws_cmd_buf, len);
+    return;
+
   } else if (strcmp(type, "heaters.connect") == 0) {
     char name[32];
     if (!ws_json_get_string(msg, "name", name, sizeof(name))) {
@@ -517,11 +540,6 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       return;
     }
     struct heater_command cmd = {.type = HEATER_CMD_CONNECT, .connect_index = idx};
-    zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
-    ws_send_result(slot, true, NULL);
-
-  } else if (strcmp(type, "heaters.disconnect") == 0) {
-    struct heater_command cmd = {.type = HEATER_CMD_DISCONNECT};
     zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 

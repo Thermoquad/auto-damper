@@ -218,17 +218,6 @@ static int cmd_ble_connect(const struct shell *sh, size_t argc, char **argv)
 // damper ble disconnect
 //////////////////////////////////////////////////////////////
 
-static int cmd_ble_disconnect(const struct shell *sh, size_t argc, char **argv)
-{
-  ARG_UNUSED(argc);
-  ARG_UNUSED(argv);
-
-  struct heater_command cmd = {.type = HEATER_CMD_DISCONNECT};
-  zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
-  shell_print(sh, "Disconnecting...");
-  return 0;
-}
-
 //////////////////////////////////////////////////////////////
 // damper ble protocol <byd|cc|auto>
 //////////////////////////////////////////////////////////////
@@ -700,7 +689,6 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
     SHELL_CMD(stop, NULL, "Stop scanning", cmd_ble_stop),
     SHELL_CMD_ARG(connect, NULL, "Connect: damper ble connect <index>",
                   cmd_ble_connect, 2, 0),
-    SHELL_CMD(disconnect, NULL, "Disconnect from heater", cmd_ble_disconnect),
     SHELL_CMD_ARG(protocol, NULL, "Set protocol: byd, cc, or auto",
                   cmd_ble_protocol, 1, 1),
     SHELL_CMD(status, NULL, "Show heater BLE status and telemetry",

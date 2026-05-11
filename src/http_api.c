@@ -640,15 +640,6 @@ static int heater_item(const char *url, enum http_method method,
     return send_json(rsp, heater_buf, len);
   }
 
-  if (method == HTTP_DELETE) {
-    if (!is_connected) {
-      return send_error(rsp, heater_buf, 400, "not connected to this heater");
-    }
-    struct heater_command cmd = {.type = HEATER_CMD_DISCONNECT};
-    zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
-    return send_ok(rsp, heater_buf);
-  }
-
   if (method == HTTP_PATCH) {
     if (!is_connected) {
       return send_error(rsp, heater_buf, 400, "not connected to this heater");
