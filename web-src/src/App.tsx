@@ -212,7 +212,8 @@ export default function App() {
                     }}
                   />
                   <span class="config-unit">°</span>
-                  <span class="config-separator">|</span>
+                </div>
+                <div class="config-row">
                   <span class="config-unit">Outside</span>
                   <input
                     type="number" class="config-angle-input"

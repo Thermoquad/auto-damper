@@ -288,8 +288,7 @@ body {
   text-align: right;
 }
 
-.config-unit,
-.config-separator {
+.config-unit {
   font-size: var(--void-text-sm);
   color: var(--void-color-text-muted);
   white-space: nowrap;
