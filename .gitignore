@@ -16,6 +16,7 @@ twister-out/
 
 # Web frontend
 web-src/node_modules/
+web/
 
 # Debug
 cmsis-dap.cfg

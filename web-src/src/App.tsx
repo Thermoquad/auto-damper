@@ -28,7 +28,24 @@ export default function App() {
     }
   });
 
-  const setAngle = (angle: number) => send({ type: 'damper.set', angle });
+  let angleTimer: number | undefined;
+  let pendingAngle: number | undefined;
+  const setAngle = (angle: number) => {
+    pendingAngle = angle;
+    if (!angleTimer) {
+      angleTimer = window.setInterval(() => {
+        if (pendingAngle !== undefined) {
+          send({ type: 'damper.set', angle: pendingAngle });
+          pendingAngle = undefined;
+        } else {
+          clearInterval(angleTimer);
+          angleTimer = undefined;
+        }
+      }, 50);
+      send({ type: 'damper.set', angle });
+      pendingAngle = undefined;
+    }
+  };
   const setAuto = () => send({ type: 'damper.set', auto: true });
   const selectHeater = (name: string) => {
     if (!name) {
@@ -167,9 +184,12 @@ export default function App() {
                   class="angle-slider"
                   value={localAngle()}
                   onPointerDown={() => setSliding(true)}
-                  onInput={(e) => setLocalAngle(parseFloat(e.currentTarget.value))}
-                  onChange={(e) => {
-                    setAngle(parseFloat(e.currentTarget.value));
+                  onInput={(e) => {
+                    const v = parseFloat(e.currentTarget.value);
+                    setLocalAngle(v);
+                    setAngle(v);
+                  }}
+                  onChange={() => {
                     setSliding(false);
                   }}
                 />
