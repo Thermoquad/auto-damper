@@ -12,8 +12,6 @@
 
 #include <auto_damper/damper.h>
 #include <auto_damper/heater.h>
-#include <auto_damper/positions.h>
-#include <auto_damper/targets.h>
 #include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(websocket, LOG_LEVEL_INF);
@@ -94,7 +92,6 @@ static void ws_send_to(int slot, const char *json, int len)
 //////////////////////////////////////////////////////////////
 
 ZBUS_SUBSCRIBER_DEFINE(ws_sub, 8);
-ZBUS_CHAN_ADD_OBS(temperature_data_chan, ws_sub, 5);
 ZBUS_CHAN_ADD_OBS(damper_data_chan, ws_sub, 5);
 ZBUS_CHAN_ADD_OBS(heater_data_chan, ws_sub, 5);
 ZBUS_CHAN_ADD_OBS(heater_devices_chan, ws_sub, 5);
@@ -119,25 +116,20 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
 
     int len = 0;
 
-    if (chan == &temperature_data_chan) {
-      struct temperature_data data;
-      zbus_chan_read(chan, &data, K_NO_WAIT);
-      len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
-          "{\"type\":\"temperature\",\"celsius\":%.1f}",
-          data.celsius);
-    } else if (chan == &damper_data_chan) {
+    if (chan == &damper_data_chan) {
       struct damper_data data;
       zbus_chan_read(chan, &data, K_NO_WAIT);
-      char pos_str[8];
-      if (data.position_id >= 0) {
-        snprintf(pos_str, sizeof(pos_str), "%d", data.position_id);
-      } else {
-        strcpy(pos_str, "null");
-      }
       len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
-          "{\"type\":\"damper\",\"mode\":\"%s\",\"angle\":%.1f,\"position\":%s}",
+          "{\"type\":\"damper\",\"mode\":\"%s\",\"route\":\"%s\","
+          "\"angle\":%.1f,\"inside_angle\":%.1f,\"outside_angle\":%.1f,"
+          "\"core_threshold\":%.1f,\"heater_name\":%s%s%s}",
           data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
-          data.angle, pos_str);
+          data.route == DAMPER_ROUTE_INSIDE ? "inside" : "outside",
+          data.angle, data.inside_angle, data.outside_angle,
+          data.core_threshold,
+          data.heater_name[0] ? "\"" : "",
+          data.heater_name[0] ? data.heater_name : "null",
+          data.heater_name[0] ? "\"" : "");
     } else if (chan == &heater_data_chan) {
       struct heater_data data;
       zbus_chan_read(chan, &data, K_NO_WAIT);
@@ -246,22 +238,6 @@ static bool ws_json_get_bool(const char *body, const char *key, bool *out)
   return false;
 }
 
-static bool ws_json_get_range(const char *body, const char *key,
-                              double *low, double *high)
-{
-  char search[32];
-  snprintf(search, sizeof(search), "\"%s\"", key);
-  char *p = strstr(body, search);
-  if (!p) return false;
-  char *bracket = strchr(p, '[');
-  if (!bracket) return false;
-  *low = strtod(bracket + 1, NULL);
-  char *comma = strchr(bracket, ',');
-  if (!comma) return false;
-  *high = strtod(comma + 1, NULL);
-  return true;
-}
-
 //////////////////////////////////////////////////////////////
 // Command Processing
 //////////////////////////////////////////////////////////////
@@ -301,22 +277,10 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
   }
 
   if (strcmp(type, "damper.set") == 0) {
-    int position_id;
     double angle;
     bool auto_mode;
 
-    if (ws_json_get_int(msg, "position", &position_id)) {
-      const struct position *p = positions_get(position_id);
-      if (!p) {
-        ws_send_result(slot, false, "unknown position");
-        return;
-      }
-      struct damper_command cmd = {
-          .type = DAMPER_CMD_SET_POSITION,
-          .position_id = position_id,
-      };
-      zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    } else if (ws_json_get_double(msg, "angle", &angle)) {
+    if (ws_json_get_double(msg, "angle", &angle)) {
       struct servo_config *cfg = servo_config_get();
       if (angle < 0 || angle > cfg->max_deg) {
         ws_send_result(slot, false, "angle out of range");
@@ -331,142 +295,64 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       struct damper_command cmd = {.type = DAMPER_CMD_SET_AUTO};
       zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     } else {
-      ws_send_result(slot, false, "need position, angle, or auto");
+      ws_send_result(slot, false, "need angle or auto");
       return;
     }
     ws_send_result(slot, true, NULL);
 
-  } else if (strcmp(type, "positions.set") == 0) {
-    int id;
-    char label[16];
-    double angle;
+  } else if (strcmp(type, "damper.config") == 0) {
+    struct damper_config *cfg = damper_config_get();
+    double inside, outside, threshold;
 
-    if (!ws_json_get_int(msg, "id", &id) || id < 0 || id >= POSITION_MAX_SLOTS) {
-      ws_send_result(slot, false, "invalid id");
-      return;
-    }
-    if (!ws_json_get_string(msg, "label", label, sizeof(label))) {
-      ws_send_result(slot, false, "need label");
-      return;
-    }
-    if (!ws_json_get_double(msg, "angle", &angle)) {
-      ws_send_result(slot, false, "need angle");
-      return;
-    }
-    struct servo_config *cfg = servo_config_get();
-    if (angle < 0 || angle > cfg->max_deg) {
-      ws_send_result(slot, false, "angle out of servo range");
-      return;
-    }
-    struct damper_command cmd = {.type = DAMPER_CMD_POSITION_SET,
-        .position_id = id, .angle = angle};
-    strncpy(cmd.label, label, sizeof(cmd.label) - 1);
-    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    int rc = damper_last_config_result();
-    ws_send_result(slot, rc == 0, rc == -EINVAL ? "invalid" : rc < 0 ? "save failed" : NULL);
-
-  } else if (strcmp(type, "positions.delete") == 0) {
-    int id;
-    if (!ws_json_get_int(msg, "id", &id)) {
-      ws_send_result(slot, false, "need id");
-      return;
-    }
-    if (targets_position_referenced(id)) {
-      ws_send_result(slot, false, "position referenced by target");
-      return;
-    }
-    struct damper_command cmd = {.type = DAMPER_CMD_POSITION_DELETE, .position_id = id};
-    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    int rc = damper_last_config_result();
-    ws_send_result(slot, rc == 0, rc < 0 ? "not found" : NULL);
-
-  } else if (strcmp(type, "targets.set") == 0) {
-    int id, position_id;
-    double range_low, range_high;
-
-    if (!ws_json_get_int(msg, "id", &id) || id < 0 || id >= TARGET_MAX_SLOTS) {
-      ws_send_result(slot, false, "invalid id");
-      return;
-    }
-    if (!ws_json_get_range(msg, "range", &range_low, &range_high)) {
-      ws_send_result(slot, false, "need range [low, high]");
-      return;
-    }
-    if (!ws_json_get_int(msg, "position", &position_id)) {
-      ws_send_result(slot, false, "need position id");
-      return;
-    }
-    struct damper_command cmd = {.type = DAMPER_CMD_TARGET_SET,
-        .target_id = id, .position_id = position_id,
-        .range_low = range_low, .range_high = range_high};
-    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
-    int rc = damper_last_config_result();
-    if (rc == -EEXIST) {
-      ws_send_result(slot, false, "overlapping range");
-    } else if (rc == -EINVAL) {
-      ws_send_result(slot, false, "invalid range");
-    } else if (rc == -ENOENT) {
-      ws_send_result(slot, false, "unknown position");
+    if (ws_json_get_double(msg, "inside_angle", &inside)) {
+      cfg->inside_angle = inside;
     } else {
-      ws_send_result(slot, rc == 0, rc < 0 ? "save failed" : NULL);
+      inside = cfg->inside_angle;
+    }
+    if (ws_json_get_double(msg, "outside_angle", &outside)) {
+      cfg->outside_angle = outside;
+    } else {
+      outside = cfg->outside_angle;
+    }
+    if (ws_json_get_double(msg, "core_threshold", &threshold)) {
+      cfg->core_threshold = threshold;
+    } else {
+      threshold = cfg->core_threshold;
     }
 
-  } else if (strcmp(type, "targets.delete") == 0) {
-    int id;
-    if (!ws_json_get_int(msg, "id", &id)) {
-      ws_send_result(slot, false, "need id");
-      return;
-    }
-    struct damper_command cmd = {.type = DAMPER_CMD_TARGET_DELETE, .target_id = id};
+    struct damper_command cmd = {
+        .type = DAMPER_CMD_SET_CONFIG,
+        .inside_angle = inside,
+        .outside_angle = outside,
+        .core_threshold = threshold,
+    };
     zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     int rc = damper_last_config_result();
-    ws_send_result(slot, rc == 0, rc < 0 ? "not found" : NULL);
+    ws_send_result(slot, rc == 0, rc < 0 ? "save failed" : NULL);
+
+  } else if (strcmp(type, "damper.heater") == 0) {
+    char name[32] = "";
+    ws_json_get_string(msg, "name", name, sizeof(name));
+    struct damper_command cmd = {.type = DAMPER_CMD_SET_HEATER};
+    strncpy(cmd.heater_name, name, sizeof(cmd.heater_name) - 1);
+    zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
+    int rc = damper_last_config_result();
+    ws_send_result(slot, rc == 0, rc < 0 ? "save failed" : NULL);
 
   } else if (strcmp(type, "damper.status") == 0) {
     struct damper_data data;
     zbus_chan_read(&damper_data_chan, &data, K_NO_WAIT);
-    char pos_str[8];
-    if (data.position_id >= 0) {
-      snprintf(pos_str, sizeof(pos_str), "%d", data.position_id);
-    } else {
-      strcpy(pos_str, "null");
-    }
     int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
-        "{\"type\":\"damper\",\"mode\":\"%s\",\"angle\":%.1f,\"position\":%s}",
+        "{\"type\":\"damper\",\"mode\":\"%s\",\"route\":\"%s\","
+        "\"angle\":%.1f,\"inside_angle\":%.1f,\"outside_angle\":%.1f,"
+        "\"core_threshold\":%.1f,\"heater_name\":%s%s%s}",
         data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
-        data.angle, pos_str);
-    ws_send_to(slot, ws_cmd_buf, len);
-    return;
-
-  } else if (strcmp(type, "positions.list") == 0) {
-    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
-        "{\"type\":\"positions\",\"positions\":[");
-    bool first = true;
-    for (int i = 0; i < POSITION_MAX_SLOTS && len < (int)sizeof(ws_cmd_buf) - 60; i++) {
-      const struct position *p = positions_get(i);
-      if (!p) continue;
-      len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len,
-          "%s{\"id\":%d,\"label\":\"%s\",\"angle\":%.1f}",
-          first ? "" : ",", i, p->label, p->angle);
-      first = false;
-    }
-    len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len, "]}");
-    ws_send_to(slot, ws_cmd_buf, len);
-    return;
-
-  } else if (strcmp(type, "targets.list") == 0) {
-    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
-        "{\"type\":\"targets\",\"targets\":[");
-    bool first = true;
-    for (int i = 0; i < TARGET_MAX_SLOTS && len < (int)sizeof(ws_cmd_buf) - 60; i++) {
-      const struct target *t = targets_get(i);
-      if (!t) continue;
-      len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len,
-          "%s{\"id\":%d,\"range\":[%.1f,%.1f],\"position\":%d}",
-          first ? "" : ",", i, t->range_low, t->range_high, t->position_id);
-      first = false;
-    }
-    len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len, "]}");
+        data.route == DAMPER_ROUTE_INSIDE ? "inside" : "outside",
+        data.angle, data.inside_angle, data.outside_angle,
+        data.core_threshold,
+        data.heater_name[0] ? "\"" : "",
+        data.heater_name[0] ? data.heater_name : "null",
+        data.heater_name[0] ? "\"" : "");
     ws_send_to(slot, ws_cmd_buf, len);
     return;
 

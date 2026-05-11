@@ -11,8 +11,6 @@
 
 #include <auto_damper/damper.h>
 #include <auto_damper/heater.h>
-#include <auto_damper/positions.h>
-#include <auto_damper/targets.h>
 #include <auto_damper/wifi.h>
 #include <auto_damper/zbus.h>
 
@@ -159,26 +157,6 @@ static bool json_get_bool(const char *body, const char *key, bool *out)
   return false;
 }
 
-static bool json_get_range(const char *body, const char *key,
-                           double *low, double *high)
-{
-  char search[32];
-  snprintf(search, sizeof(search), "\"%s\"", key);
-  char *p = strstr(body, search);
-  if (!p) return false;
-
-  char *bracket = strchr(p, '[');
-  if (!bracket) return false;
-
-  *low = strtod(bracket + 1, NULL);
-
-  char *comma = strchr(bracket, ',');
-  if (!comma) return false;
-
-  *high = strtod(comma + 1, NULL);
-  return true;
-}
-
 static int parse_body(const struct http_request_ctx *req, char *buf,
                       size_t buf_size)
 {
@@ -193,21 +171,6 @@ static int parse_body(const struct http_request_ctx *req, char *buf,
 //////////////////////////////////////////////////////////////
 // Path Helpers
 //////////////////////////////////////////////////////////////
-
-static int extract_path_id(const char *url, const char *prefix)
-{
-  size_t prefix_len = strlen(prefix);
-
-  if (strncmp(url, prefix, prefix_len) != 0) {
-    return -1;
-  }
-
-  const char *id_str = url + prefix_len;
-  if (*id_str < '0' || *id_str > '9') {
-    return -1;
-  }
-  return atoi(id_str);
-}
 
 static bool extract_path_name(const char *url, const char *prefix,
                               char *out, size_t out_len)
@@ -236,32 +199,25 @@ static bool extract_path_name(const char *url, const char *prefix,
 
 static char damper_buf[JSON_BUF_SIZE];
 static char damper_body[BODY_BUF_SIZE];
-static char pos_body[BODY_BUF_SIZE];
-static char pos_resp[JSON_BUF_SIZE];
-static char tgt_body[BODY_BUF_SIZE];
-static char tgt_resp[JSON_BUF_SIZE];
 static char servo_buf[JSON_BUF_SIZE];
 static char servo_body[BODY_BUF_SIZE];
 
 static int damper_state_get(struct http_response_ctx *rsp)
 {
-  struct temperature_data temp = {0};
   struct damper_data data = {0};
-
-  zbus_chan_read(&temperature_data_chan, &temp, PUB_TIMEOUT);
   zbus_chan_read(&damper_data_chan, &data, PUB_TIMEOUT);
 
-  char pos_str[8];
-  if (data.position_id >= 0) {
-    snprintf(pos_str, sizeof(pos_str), "%d", data.position_id);
-  } else {
-    strcpy(pos_str, "null");
-  }
-
   int len = snprintf(damper_buf, sizeof(damper_buf),
-      "{\"mode\":\"%s\",\"angle\":%.1f,\"position\":%s,\"temperature\":%.1f}",
+      "{\"mode\":\"%s\",\"route\":\"%s\",\"angle\":%.1f,"
+      "\"inside_angle\":%.1f,\"outside_angle\":%.1f,"
+      "\"core_threshold\":%.1f,\"heater_name\":%s%s%s}",
       data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
-      data.angle, pos_str, temp.celsius);
+      data.route == DAMPER_ROUTE_INSIDE ? "inside" : "outside",
+      data.angle, data.inside_angle, data.outside_angle,
+      data.core_threshold,
+      data.heater_name[0] ? "\"" : "",
+      data.heater_name[0] ? data.heater_name : "null",
+      data.heater_name[0] ? "\"" : "");
 
   return send_json(rsp, damper_buf, len);
 }
@@ -273,21 +229,10 @@ static int damper_state_patch(const struct http_request_ctx *req,
     return send_error(rsp, damper_buf, 400, "invalid body");
   }
 
-  int position_id;
   double angle;
   bool auto_mode;
 
-  if (json_get_int(damper_body, "position", &position_id)) {
-    const struct position *p = positions_get(position_id);
-    if (!p) {
-      return send_error(rsp, damper_buf, 400, "unknown position");
-    }
-    struct damper_command cmd = {
-        .type = DAMPER_CMD_SET_POSITION,
-        .position_id = position_id,
-    };
-    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
-  } else if (json_get_double(damper_body, "angle", &angle)) {
+  if (json_get_double(damper_body, "angle", &angle)) {
     struct servo_config *cfg = servo_config_get();
     if (angle < 0 || angle > cfg->max_deg) {
       return send_error(rsp, damper_buf, 400, "angle out of range");
@@ -301,136 +246,56 @@ static int damper_state_patch(const struct http_request_ctx *req,
     struct damper_command cmd = {.type = DAMPER_CMD_SET_AUTO};
     zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
   } else {
-    return send_error(rsp, damper_buf, 400,
-                      "need position, angle, or auto field");
+    return send_error(rsp, damper_buf, 400, "need angle or auto field");
   }
 
   return send_ok(rsp, damper_buf);
 }
 
-static int positions_handler(const char *url,
-                             enum http_method method,
-                             const struct http_request_ctx *req,
-                             struct http_response_ctx *rsp)
+static int damper_config_handler(const struct http_request_ctx *req,
+                                 struct http_response_ctx *rsp)
 {
-  int id = extract_path_id(url, "/api/damper/positions/");
-
-  if (id < 0 && method == HTTP_GET) {
-    int off = snprintf(pos_resp, sizeof(pos_resp), "{\"positions\":[");
-    bool first = true;
-    for (int i = 0; i < POSITION_MAX_SLOTS; i++) {
-      const struct position *p = positions_get(i);
-      if (!p) continue;
-      off += snprintf(pos_resp + off, sizeof(pos_resp) - off,
-          "%s{\"id\":%d,\"label\":\"%s\",\"angle\":%.1f}",
-          first ? "" : ",", i, p->label, p->angle);
-      first = false;
-    }
-    off += snprintf(pos_resp + off, sizeof(pos_resp) - off, "]}");
-    return send_json(rsp, pos_resp, off);
+  if (parse_body(req, damper_body, sizeof(damper_body)) < 0) {
+    return send_error(rsp, damper_buf, 400, "invalid body");
   }
 
-  if (id < 0 || id >= POSITION_MAX_SLOTS) {
-    return send_error(rsp, pos_resp, 400, "invalid position id");
-  }
+  struct damper_config *cfg = damper_config_get();
+  double inside, outside, threshold;
 
-  if (method == HTTP_DELETE) {
-    if (targets_position_referenced(id)) {
-      return send_error(rsp, pos_resp, 409, "position referenced by target");
-    }
-    struct damper_command cmd = {.type = DAMPER_CMD_POSITION_DELETE, .position_id = id};
-    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
-    return send_ok(rsp, pos_resp);
-  }
+  inside = cfg->inside_angle;
+  outside = cfg->outside_angle;
+  threshold = cfg->core_threshold;
 
-  if (parse_body(req, pos_body, sizeof(pos_body)) < 0) {
-    return send_error(rsp, pos_resp, 400, "invalid body");
-  }
+  json_get_double(damper_body, "inside_angle", &inside);
+  json_get_double(damper_body, "outside_angle", &outside);
+  json_get_double(damper_body, "core_threshold", &threshold);
 
-  char label[POSITION_LABEL_MAX + 1];
-  double angle;
-
-  if (!json_get_string(pos_body, "label", label, sizeof(label))) {
-    return send_error(rsp, pos_resp, 400, "need label");
-  }
-  if (!json_get_double(pos_body, "angle", &angle)) {
-    return send_error(rsp, pos_resp, 400, "need angle");
-  }
-  if (strlen(label) > POSITION_LABEL_MAX) {
-    return send_error(rsp, pos_resp, 400, "label too long");
-  }
-
-  struct servo_config *cfg = servo_config_get();
-  if (angle < 0 || angle > cfg->max_deg) {
-    return send_error(rsp, pos_resp, 400, "angle out of servo range");
-  }
-
-  struct damper_command cmd = {.type = DAMPER_CMD_POSITION_SET,
-      .position_id = id, .angle = angle};
-  strncpy(cmd.label, label, sizeof(cmd.label) - 1);
+  struct damper_command cmd = {
+      .type = DAMPER_CMD_SET_CONFIG,
+      .inside_angle = inside,
+      .outside_angle = outside,
+      .core_threshold = threshold,
+  };
   zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
 
-  int len = snprintf(pos_resp, sizeof(pos_resp),
-      "{\"ok\":true,\"id\":%d,\"label\":\"%s\",\"angle\":%.1f}",
-      id, label, angle);
-  return send_json(rsp, pos_resp, len);
+  return send_ok(rsp, damper_buf);
 }
 
-static int targets_handler(const char *url,
-                           enum http_method method,
-                           const struct http_request_ctx *req,
-                           struct http_response_ctx *rsp)
+static int damper_heater_handler(const struct http_request_ctx *req,
+                                 struct http_response_ctx *rsp)
 {
-  int id = extract_path_id(url, "/api/damper/targets/");
-
-  if (id < 0 && method == HTTP_GET) {
-    int off = snprintf(tgt_resp, sizeof(tgt_resp), "{\"targets\":[");
-    bool first = true;
-    for (int i = 0; i < TARGET_MAX_SLOTS; i++) {
-      const struct target *t = targets_get(i);
-      if (!t) continue;
-      off += snprintf(tgt_resp + off, sizeof(tgt_resp) - off,
-          "%s{\"id\":%d,\"range\":[%.1f,%.1f],\"position\":%d}",
-          first ? "" : ",", i, t->range_low, t->range_high, t->position_id);
-      first = false;
-    }
-    off += snprintf(tgt_resp + off, sizeof(tgt_resp) - off, "]}");
-    return send_json(rsp, tgt_resp, off);
+  if (parse_body(req, damper_body, sizeof(damper_body)) < 0) {
+    return send_error(rsp, damper_buf, 400, "invalid body");
   }
 
-  if (id < 0 || id >= TARGET_MAX_SLOTS) {
-    return send_error(rsp, tgt_resp, 400, "invalid target id");
-  }
+  char name[32] = "";
+  json_get_string(damper_body, "name", name, sizeof(name));
 
-  if (method == HTTP_DELETE) {
-    struct damper_command cmd = {.type = DAMPER_CMD_TARGET_DELETE, .target_id = id};
-    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
-    return send_ok(rsp, tgt_resp);
-  }
-
-  if (parse_body(req, tgt_body, sizeof(tgt_body)) < 0) {
-    return send_error(rsp, tgt_resp, 400, "invalid body");
-  }
-
-  double range_low, range_high;
-  int position_id;
-
-  if (!json_get_range(tgt_body, "range", &range_low, &range_high)) {
-    return send_error(rsp, tgt_resp, 400, "need range [low, high]");
-  }
-  if (!json_get_int(tgt_body, "position", &position_id)) {
-    return send_error(rsp, tgt_resp, 400, "need position id");
-  }
-
-  struct damper_command cmd = {.type = DAMPER_CMD_TARGET_SET,
-      .target_id = id, .position_id = position_id,
-      .range_low = range_low, .range_high = range_high};
+  struct damper_command cmd = {.type = DAMPER_CMD_SET_HEATER};
+  strncpy(cmd.heater_name, name, sizeof(cmd.heater_name) - 1);
   zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
 
-  int len = snprintf(tgt_resp, sizeof(tgt_resp),
-      "{\"ok\":true,\"id\":%d,\"range\":[%.1f,%.1f],\"position\":%d}",
-      id, range_low, range_high, position_id);
-  return send_json(rsp, tgt_resp, len);
+  return send_ok(rsp, damper_buf);
 }
 
 static int servo_handler(enum http_method method,
@@ -486,12 +351,12 @@ static int handle_api_damper(struct http_client_ctx *client,
     return damper_state_patch(req, rsp);
   }
 
-  if (strncmp(url, "/api/damper/positions", 20) == 0) {
-    return positions_handler(url, client->method, req, rsp);
+  if (strcmp(url, "/api/damper/config") == 0) {
+    return damper_config_handler(req, rsp);
   }
 
-  if (strncmp(url, "/api/damper/targets", 19) == 0) {
-    return targets_handler(url, client->method, req, rsp);
+  if (strcmp(url, "/api/damper/heater") == 0) {
+    return damper_heater_handler(req, rsp);
   }
 
   if (strcmp(url, "/api/damper/servo") == 0) {

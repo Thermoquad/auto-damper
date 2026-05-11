@@ -6,38 +6,23 @@
 #include <auto_damper/heater.h>
 
 //////////////////////////////////////////////////////////////
-// Temperature Channel
-//////////////////////////////////////////////////////////////
-
-struct temperature_data {
-  double celsius;
-  int64_t timestamp_us;
-};
-
-ZBUS_CHAN_DECLARE(temperature_data_chan);
-
-//////////////////////////////////////////////////////////////
 // Damper Command Channel
 //////////////////////////////////////////////////////////////
 
 enum damper_command_type {
   DAMPER_CMD_SET_AUTO,
-  DAMPER_CMD_SET_POSITION,
   DAMPER_CMD_SET_ANGLE,
-  DAMPER_CMD_POSITION_SET,
-  DAMPER_CMD_POSITION_DELETE,
-  DAMPER_CMD_TARGET_SET,
-  DAMPER_CMD_TARGET_DELETE,
+  DAMPER_CMD_SET_CONFIG,
+  DAMPER_CMD_SET_HEATER,
 };
 
 struct damper_command {
   enum damper_command_type type;
-  int position_id;
   double angle;
-  char label[16];
-  int target_id;
-  double range_low;
-  double range_high;
+  double inside_angle;
+  double outside_angle;
+  double core_threshold;
+  char heater_name[32];
 };
 
 ZBUS_CHAN_DECLARE(damper_command_chan);
@@ -51,10 +36,19 @@ enum damper_mode {
   DAMPER_MODE_MANUAL,
 };
 
+enum damper_route {
+  DAMPER_ROUTE_OUTSIDE,
+  DAMPER_ROUTE_INSIDE,
+};
+
 struct damper_data {
   enum damper_mode mode;
+  enum damper_route route;
   double angle;
-  int position_id;
+  double inside_angle;
+  double outside_angle;
+  double core_threshold;
+  char heater_name[32];
   int64_t timestamp_us;
 };
 

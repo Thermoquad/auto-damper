@@ -16,18 +16,6 @@
 	};
 };
 
-&pinctrl {
-	spi0_max6675: spi0_max6675 {
-		group1 {
-			pinmux = <SPI0_SCK_P18>, <SPI0_TX_P19>;
-		};
-		group2 {
-			pinmux = <SPI0_RX_P16>;
-			input-enable;
-		};
-	};
-};
-
 &pio1 {
 	status = "okay";
 
@@ -36,19 +24,6 @@
 		gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
 		#pwm-cells = <3>;
 		status = "okay";
-	};
-};
-
-&spi0 {
-	status = "okay";
-	pinctrl-0 = <&spi0_max6675>;
-	pinctrl-names = "default";
-	cs-gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
-
-	max6675: max6675@0 {
-		compatible = "maxim,max6675";
-		reg = <0>;
-		spi-max-frequency = <4300000>;
 	};
 };
 

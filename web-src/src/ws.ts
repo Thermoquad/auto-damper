@@ -1,11 +1,14 @@
 import { createSignal, createEffect, onCleanup } from 'solid-js';
 
-export type TemperatureMsg = { type: 'temperature'; celsius: number };
 export type DamperMsg = {
   type: 'damper';
   mode: 'auto' | 'manual';
+  route: 'inside' | 'outside';
   angle: number;
-  position: number | null;
+  inside_angle: number;
+  outside_angle: number;
+  core_threshold: number;
+  heater_name: string | null;
 };
 export type HeaterMsg = {
   type: 'heater';
@@ -25,24 +28,14 @@ export type HeaterDevice = { name: string; rssi: number; protocol: string };
 export type HeatersMsg = { type: 'heaters'; connected: number; devices: HeaterDevice[] };
 export type ResultMsg = { type: 'result'; ok: boolean; error?: string };
 
-export type PositionEntry = { id: number; label: string; angle: number };
-export type PositionsMsg = { type: 'positions'; positions: PositionEntry[] };
-
-export type TargetEntry = { id: number; range: [number, number]; position: number };
-export type TargetsMsg = { type: 'targets'; targets: TargetEntry[] };
-
-export type WsMessage = TemperatureMsg | DamperMsg | HeaterMsg | HeatersMsg |
-  ResultMsg | PositionsMsg | TargetsMsg;
+export type WsMessage = DamperMsg | HeaterMsg | HeatersMsg | ResultMsg;
 
 export function createWs() {
   const [connected, setConnected] = createSignal(false);
-  const [temperature, setTemperature] = createSignal<TemperatureMsg | null>(null);
   const [damper, setDamper] = createSignal<DamperMsg | null>(null);
   const [heater, setHeater] = createSignal<HeaterMsg | null>(null);
   const [heaters, setHeaters] = createSignal<HeatersMsg | null>(null);
   const [lastResult, setLastResult] = createSignal<ResultMsg | null>(null);
-  const [positions, setPositions] = createSignal<PositionEntry[] | null>(null);
-  const [targets, setTargets] = createSignal<TargetEntry[] | null>(null);
 
   let ws: WebSocket | null = null;
   let reconnectTimer: number | undefined;
@@ -56,9 +49,6 @@ export function createWs() {
     ws.onmessage = (e) => {
       const msg: WsMessage = JSON.parse(e.data);
       switch (msg.type) {
-        case 'temperature':
-          setTemperature(msg);
-          break;
         case 'damper':
           setDamper(msg);
           break;
@@ -70,12 +60,6 @@ export function createWs() {
           break;
         case 'result':
           setLastResult(msg);
-          break;
-        case 'positions':
-          setPositions((msg as PositionsMsg).positions);
-          break;
-        case 'targets':
-          setTargets((msg as TargetsMsg).targets);
           break;
       }
     };
@@ -106,5 +90,5 @@ export function createWs() {
     send(msg);
   }
 
-  return { connected, temperature, damper, heater, heaters, positions, setPositions, targets, setTargets, lastResult, send, sendCmd };
+  return { connected, damper, heater, heaters, lastResult, send, sendCmd };
 }

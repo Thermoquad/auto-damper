@@ -3,14 +3,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/pwm.h>
-#include <zephyr/drivers/sensor.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/zbus/zbus.h>
 
 #include <auto_damper/config.h>
 #include <auto_damper/damper.h>
-#include <auto_damper/positions.h>
-#include <auto_damper/targets.h>
 #include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -18,9 +15,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 //////////////////////////////////////////////////////////////
 // Hardware Devices
 //////////////////////////////////////////////////////////////
-
-static const struct device *const thermocouple =
-    DEVICE_DT_GET_ONE(maxim_max6675);
 
 static const struct pwm_dt_spec servo =
     PWM_DT_SPEC_GET(DT_NODELABEL(servo));
@@ -30,61 +24,6 @@ static const struct pwm_dt_spec servo =
 //////////////////////////////////////////////////////////////
 
 extern void damper_thread(void *, void *, void *);
-extern void temperature_thread(void *, void *, void *);
-
-//////////////////////////////////////////////////////////////
-// Thread: Temperature Reader
-//////////////////////////////////////////////////////////////
-
-#define TEMP_STACK_SIZE 1024
-#define TEMP_PRIORITY 5
-#define TEMP_READ_INTERVAL_MS 500
-
-K_THREAD_DEFINE(temperature_thread_id, TEMP_STACK_SIZE,
-                temperature_thread, NULL, NULL, NULL,
-                TEMP_PRIORITY, 0, 0);
-
-void temperature_thread(void *p1, void *p2, void *p3)
-{
-  ARG_UNUSED(p1);
-  ARG_UNUSED(p2);
-  ARG_UNUSED(p3);
-
-  if (!device_is_ready(thermocouple)) {
-    LOG_ERR("MAX6675 not ready");
-    return;
-  }
-
-  LOG_INF("Temperature reader started");
-
-  while (1) {
-    struct sensor_value val;
-    int ret;
-
-    ret = sensor_sample_fetch_chan(thermocouple, SENSOR_CHAN_AMBIENT_TEMP);
-    if (ret < 0) {
-      LOG_WRN("Failed to fetch temperature: %d", ret);
-      k_sleep(K_MSEC(TEMP_READ_INTERVAL_MS));
-      continue;
-    }
-
-    ret = sensor_channel_get(thermocouple, SENSOR_CHAN_AMBIENT_TEMP, &val);
-    if (ret < 0) {
-      LOG_WRN("Failed to read temperature: %d", ret);
-      k_sleep(K_MSEC(TEMP_READ_INTERVAL_MS));
-      continue;
-    }
-
-    struct temperature_data data = {
-        .celsius = sensor_value_to_double(&val),
-        .timestamp_us = k_ticks_to_us_ceil64(k_uptime_ticks()),
-    };
-
-    zbus_chan_pub(&temperature_data_chan, &data, K_MSEC(100));
-
-    k_sleep(K_MSEC(TEMP_READ_INTERVAL_MS));
-  }
-}
 
 //////////////////////////////////////////////////////////////
 // Thread: Damper Controller
@@ -134,9 +73,6 @@ int main(void)
   if (rc) {
     LOG_ERR("Config init failed: %d", rc);
   }
-
-  positions_init();
-  targets_init();
 
   struct heater_command cmd = {.type = HEATER_CMD_SCAN, .scan_timeout = 5};
   zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(500));
