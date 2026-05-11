@@ -6,6 +6,7 @@ export default function App() {
   const { connected, damper, heater, heaters, lastResult, send, sendCmd } = createWs();
   const [sliding, setSliding] = createSignal(false);
   const [localAngle, setLocalAngle] = createSignal(0);
+  const [damperTab, setDamperTab] = createSignal<'control' | 'config'>('control');
   const [selectedName, setSelectedName] = createSignal('');
   const [knownDevices, setKnownDevices] = createSignal<HeaterDevice[]>([]);
   let heaterSelectRef: HTMLElement | undefined;
@@ -82,7 +83,14 @@ export default function App() {
       pendingAngle = undefined;
     }
   };
-  const setAuto = () => send({ type: 'damper.set', auto: true });
+  const isAuto = () => damper()?.mode === 'auto';
+  const toggleMode = () => {
+    if (isAuto()) {
+      send({ type: 'damper.set', angle: localAngle() });
+    } else {
+      send({ type: 'damper.set', auto: true });
+    }
+  };
   const heaterCmd = (cmd: Record<string, unknown>) =>
     send({ type: 'heater.command', ...cmd });
   const heaterError = (code: number): string => {
@@ -132,108 +140,125 @@ export default function App() {
             <span class="card-title">Damper</span>
             <Show when={damper()}>
               <div class="card-header-right">
-                <void-badge color={damper()!.mode === 'auto' ? 'info' : 'notice'}>
-                  {damper()!.mode}
-                </void-badge>
                 <void-badge color={damper()!.route === 'inside' ? 'success' : 'default'}>
                   {damper()!.route}
                 </void-badge>
               </div>
             </Show>
           </div>
-          <div class="card-body">
-            <Show when={damper()} fallback={<div class="stat-value">--</div>}>
-              <div class="stat-value">{damper()!.angle.toFixed(1)}°</div>
-            </Show>
+          <div class="card-tabs">
+            <button class={`tab ${damperTab() === 'control' ? 'active' : ''}`}
+              onClick={() => setDamperTab('control')}>Control</button>
+            <button class={`tab ${damperTab() === 'config' ? 'active' : ''}`}
+              onClick={() => setDamperTab('config')}>Config</button>
           </div>
-          <div class="card-actions damper-angle-controls">
-            <div class="angle-slider-row">
-              <input
-                type="range" min="0" max="270" step="0.5"
-                class="angle-slider"
-                value={localAngle()}
-                onPointerDown={() => setSliding(true)}
-                onInput={(e) => {
-                  const v = parseFloat(e.currentTarget.value);
-                  setLocalAngle(v);
-                  setAngle(v);
-                }}
-                onChange={() => {
-                  setSliding(false);
-                }}
-              />
-              <input
-                type="number" min="0" max="270" step="0.5"
-                class="angle-input"
-                value={localAngle().toFixed(1)}
-                onChange={(e) => {
-                  const v = parseFloat(e.currentTarget.value);
-                  if (!isNaN(v)) setAngle(Math.max(0, Math.min(270, v)));
-                }}
-              />
+          <Show when={damperTab() === 'control'}>
+            <div class="card-body">
+              <Show when={damper()} fallback={<div class="stat-value">--</div>}>
+                <div class="stat-value">{damper()!.angle.toFixed(1)}°</div>
+              </Show>
             </div>
-            <void-button variant="filled" size="sm" color="info" onClick={setAuto}>
-              Auto
-            </void-button>
-          </div>
-          <div class="card-body config-body">
-            <div class="config-section">
-              <span class="stat-label">Configuration</span>
-              <div class="config-row">
-                <span class="config-unit">Inside</span>
+            <div class="card-actions damper-angle-controls">
+              <div class="angle-slider-row">
                 <input
-                  type="number" class="config-angle-input"
-                  min="0" max="270" step="0.5"
-                  value={damper()?.inside_angle?.toFixed(1) ?? '0.0'}
-                  onChange={(e) => {
+                  type="range" min="0" max="270" step="0.5"
+                  class="angle-slider"
+                  disabled={isAuto()}
+                  value={localAngle()}
+                  onPointerDown={() => setSliding(true)}
+                  onInput={(e) => {
                     const v = parseFloat(e.currentTarget.value);
-                    if (!isNaN(v)) saveConfig('inside_angle', Math.max(0, Math.min(270, v)));
+                    setLocalAngle(v);
+                    setAngle(v);
+                  }}
+                  onChange={() => {
+                    setSliding(false);
                   }}
                 />
-                <span class="config-unit">°</span>
-                <span class="config-separator">|</span>
-                <span class="config-unit">Outside</span>
                 <input
-                  type="number" class="config-angle-input"
-                  min="0" max="270" step="0.5"
-                  value={damper()?.outside_angle?.toFixed(1) ?? '270.0'}
+                  type="number" min="0" max="270" step="0.5"
+                  class="angle-input"
+                  disabled={isAuto()}
+                  value={localAngle().toFixed(1)}
                   onChange={(e) => {
                     const v = parseFloat(e.currentTarget.value);
-                    if (!isNaN(v)) saveConfig('outside_angle', Math.max(0, Math.min(270, v)));
+                    if (!isNaN(v)) setAngle(Math.max(0, Math.min(270, v)));
                   }}
                 />
-                <span class="config-unit">°</span>
               </div>
-              <div class="config-row">
-                <span class="config-unit">Core Threshold</span>
-                <input
-                  type="number" class="config-temp-input"
-                  min="0" max="500" step="5"
-                  value={damper()?.core_threshold?.toFixed(0) ?? '150'}
-                  onChange={(e) => {
-                    const v = parseFloat(e.currentTarget.value);
-                    if (!isNaN(v)) saveConfig('core_threshold', v);
-                  }}
-                />
-                <span class="config-unit">°C</span>
-              </div>
-              <div class="config-row">
-                <span class="config-unit">Heater ID</span>
-                <Show when={knownDevices().length} fallback={
-                  <span class="config-empty">{damper()?.heater_name ?? 'none'}</span>
-                }>
-                  <select class="config-pos-select"
-                    value={damper()?.heater_name ?? ''}
-                    onChange={(e) => setDamperHeater(e.currentTarget.value)}>
-                    <option value="">None</option>
-                    {knownDevices().map(d => (
-                      <option value={d.name}>{d.name}</option>
-                    ))}
-                  </select>
-                </Show>
+              <div class="mode-toggle-row">
+                <void-button
+                  variant="filled" size="sm"
+                  color={isAuto() ? 'info' : 'notice'}
+                  onClick={toggleMode}>
+                  {isAuto() ? 'Auto' : 'Manual'}
+                </void-button>
               </div>
             </div>
-          </div>
+          </Show>
+          <Show when={damperTab() === 'config'}>
+            <div class="card-body config-body">
+              <div class="config-section">
+                <span class="stat-label">Angles</span>
+                <div class="config-row">
+                  <span class="config-unit">Inside</span>
+                  <input
+                    type="number" class="config-angle-input"
+                    min="0" max="270" step="0.5"
+                    value={damper()?.inside_angle?.toFixed(1) ?? '0.0'}
+                    onChange={(e) => {
+                      const v = parseFloat(e.currentTarget.value);
+                      if (!isNaN(v)) saveConfig('inside_angle', Math.max(0, Math.min(270, v)));
+                    }}
+                  />
+                  <span class="config-unit">°</span>
+                  <span class="config-separator">|</span>
+                  <span class="config-unit">Outside</span>
+                  <input
+                    type="number" class="config-angle-input"
+                    min="0" max="270" step="0.5"
+                    value={damper()?.outside_angle?.toFixed(1) ?? '270.0'}
+                    onChange={(e) => {
+                      const v = parseFloat(e.currentTarget.value);
+                      if (!isNaN(v)) saveConfig('outside_angle', Math.max(0, Math.min(270, v)));
+                    }}
+                  />
+                  <span class="config-unit">°</span>
+                </div>
+              </div>
+              <div class="config-section">
+                <span class="stat-label">Auto Routing</span>
+                <div class="config-row">
+                  <span class="config-unit">Core Threshold</span>
+                  <input
+                    type="number" class="config-temp-input"
+                    min="0" max="500" step="5"
+                    value={damper()?.core_threshold?.toFixed(0) ?? '150'}
+                    onChange={(e) => {
+                      const v = parseFloat(e.currentTarget.value);
+                      if (!isNaN(v)) saveConfig('core_threshold', v);
+                    }}
+                  />
+                  <span class="config-unit">°C</span>
+                </div>
+                <div class="config-row">
+                  <span class="config-unit">Heater ID</span>
+                  <Show when={knownDevices().length} fallback={
+                    <span class="config-empty">{damper()?.heater_name ?? 'none'}</span>
+                  }>
+                    <select class="config-pos-select"
+                      value={damper()?.heater_name ?? ''}
+                      onChange={(e) => setDamperHeater(e.currentTarget.value)}>
+                      <option value="">None</option>
+                      {knownDevices().map(d => (
+                        <option value={d.name}>{d.name}</option>
+                      ))}
+                    </select>
+                  </Show>
+                </div>
+              </div>
+            </div>
+          </Show>
         </section>
 
         <section class="card">

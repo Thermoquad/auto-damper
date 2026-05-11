@@ -218,6 +218,15 @@ body {
   accent-color: var(--void-color-info, #3b82f6);
 }
 
+.angle-slider:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.angle-input:disabled {
+  opacity: 0.4;
+}
+
 .angle-input {
   width: 5.5rem;
   padding: var(--void-space-2) var(--void-space-3);
@@ -307,5 +316,40 @@ body {
   padding: 0.25rem 0.5rem;
   background: color-mix(in srgb, var(--void-color-error) 10%, transparent);
   border-radius: var(--void-radius-sm);
+}
+
+/* Tabs */
+.card-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--void-color-border);
+}
+
+.tab {
+  flex: 1;
+  padding: var(--void-space-3) var(--void-space-4);
+  font-size: var(--void-text-sm);
+  font-weight: var(--void-weight-medium);
+  color: var(--void-color-text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab:hover {
+  color: var(--void-color-text);
+}
+
+.tab.active {
+  color: var(--void-color-text);
+  border-bottom-color: var(--void-color-text);
+}
+
+/* Mode Toggle */
+.mode-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-3);
 }
 

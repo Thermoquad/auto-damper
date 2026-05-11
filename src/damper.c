@@ -167,6 +167,7 @@ static void auto_entry(void *ctx)
   d->route = DAMPER_ROUTE_OUTSIDE;
   LOG_INF("Mode: AUTO");
   route_to(DAMPER_ROUTE_OUTSIDE);
+  publish_damper_data();
 }
 
 static enum smf_state_result auto_run(void *ctx)
