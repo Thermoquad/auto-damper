@@ -769,6 +769,12 @@ static void heater_cmd_callback(const struct zbus_channel *chan)
   case HEATER_CMD_ADJUST_POWER:
     heater_ble_send_adjust_power(cmd->power_delta);
     break;
+  case HEATER_CMD_RAW:
+    if (heater_conn && write_handle != 0 && cmd->raw.len > 0) {
+      bt_gatt_write_without_response(heater_conn, write_handle,
+                                     cmd->raw.data, cmd->raw.len, false);
+    }
+    break;
   }
 }
 

@@ -413,6 +413,35 @@ static int cmd_ble_rx_pause(const struct shell *sh, size_t argc, char **argv)
 }
 
 //////////////////////////////////////////////////////////////
+// damper ble raw <hex bytes>
+//////////////////////////////////////////////////////////////
+
+static int cmd_ble_raw(const struct shell *sh, size_t argc, char **argv)
+{
+  if (argc < 2) {
+    shell_error(sh, "Usage: damper ble raw <hex bytes...>");
+    return -EINVAL;
+  }
+
+  struct heater_command cmd = {.type = HEATER_CMD_RAW};
+  int len = 0;
+
+  for (int i = 1; i < argc && len < (int)sizeof(cmd.raw.data); i++) {
+    unsigned int val;
+    if (sscanf(argv[i], "%x", &val) != 1 || val > 0xFF) {
+      shell_error(sh, "Invalid hex byte: %s", argv[i]);
+      return -EINVAL;
+    }
+    cmd.raw.data[len++] = (uint8_t)val;
+  }
+
+  cmd.raw.len = len;
+  zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);
+  shell_print(sh, "Sent %d bytes", len);
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////
 // damper test wifi_ble
 //////////////////////////////////////////////////////////////
 
@@ -718,6 +747,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
               cmd_ble_status),
     SHELL_CMD_ARG(rx_pause, NULL, "Pause BT RX: damper ble rx_pause <on|off>",
                   cmd_ble_rx_pause, 2, 0),
+    SHELL_CMD_ARG(raw, NULL, "Send raw hex: damper ble raw AA 55 ...",
+                  cmd_ble_raw, 2, 15),
     SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(

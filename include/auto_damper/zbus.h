@@ -66,6 +66,7 @@ enum heater_cmd_type {
   HEATER_CMD_SET_MODE,
   HEATER_CMD_SET_TEMP,
   HEATER_CMD_ADJUST_POWER,
+  HEATER_CMD_RAW,
 };
 
 struct heater_command {
@@ -77,6 +78,10 @@ struct heater_command {
     enum heater_run_mode mode;
     int temp;
     int power_delta;
+    struct {
+      uint8_t data[16];
+      uint8_t len;
+    } raw;
   };
 };
 

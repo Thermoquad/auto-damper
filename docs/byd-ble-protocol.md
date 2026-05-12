@@ -70,6 +70,22 @@ Byte 7: checksum        (byte2 + byte3 + byte4 + byte5 + byte6) & 0xFF
 | Power ON | `AA 55 0C 22 03 01 00 32` |
 | Power OFF | `AA 55 0C 22 03 00 00 31` |
 | Set temp 20°C | `AA 55 0C 22 04 14 00 46` |
+| Language EN | `AA 55 0C 22 0E 00 00 3C` |
+| Language DE | `AA 55 0C 22 0E 04 00 40` |
+
+### Changing Language via Shell
+
+Use the raw BLE command to set the voice/display language while connected:
+
+```
+damper ble raw AA 55 0C 22 0E 00 00 3C   # English
+damper ble raw AA 55 0C 22 0E 01 00 3D   # Chinese
+damper ble raw AA 55 0C 22 0E 02 00 3E   # Russian
+damper ble raw AA 55 0C 22 0E 03 00 3F   # Off (no voice)
+damper ble raw AA 55 0C 22 0E 04 00 40   # German
+```
+
+Works while the heater is off — no need to power on first.
 
 ---
 
