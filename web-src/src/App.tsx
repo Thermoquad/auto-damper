@@ -301,7 +301,7 @@ export default function App() {
               }>
                 <div class="stat-grid">
                   <div class="stat-item">
-                    <div class="stat-label">Power</div>
+                    <div class="stat-label">System</div>
                     <div class="stat-sm">{heater()!.power}</div>
                   </div>
                   <div class="stat-item">
