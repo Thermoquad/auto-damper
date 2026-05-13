@@ -108,6 +108,13 @@ export default function App() {
   const toggleAltitude = () => heaterCmd({ altitude: true });
   const setAutoOffsets = (startup: number, shutdown: number) =>
     heaterCmd({ startup_offset: startup, shutdown_offset: shutdown });
+  const adjustOffset = (field: 'startup' | 'shutdown', delta: number) => {
+    const h = heater()!;
+    const cur = field === 'startup' ? h.startup_offset : h.shutdown_offset;
+    const next = Math.max(3, Math.min(10, cur + delta));
+    if (field === 'startup') setAutoOffsets(next, h.shutdown_offset);
+    else setAutoOffsets(h.startup_offset, next);
+  };
 
   const saveConfig = (field: string, value: number) => {
     sendCmd({ type: 'damper.config', [field]: value });
@@ -364,38 +371,35 @@ export default function App() {
               </div>
               <Show when={heater()!.mode === 'automatic'}>
                 <div class="control-group">
-                  <div class="stat-label">Auto Offsets</div>
-                  <div class="offset-row">
-                    <label class="offset-field">
-                      <span class="offset-label">Start</span>
-                      <input type="number" min="3" max="10" step="1"
-                        class="offset-input"
-                        value={heater()!.startup_offset}
-                        onChange={(e) => {
-                          const v = parseInt(e.currentTarget.value);
-                          if (!isNaN(v)) setAutoOffsets(
-                            Math.max(3, Math.min(10, v)),
-                            heater()!.shutdown_offset
-                          );
-                        }}
-                      />
-                      <span class="offset-unit">°C</span>
-                    </label>
-                    <label class="offset-field">
-                      <span class="offset-label">Stop</span>
-                      <input type="number" min="3" max="10" step="1"
-                        class="offset-input"
-                        value={heater()!.shutdown_offset}
-                        onChange={(e) => {
-                          const v = parseInt(e.currentTarget.value);
-                          if (!isNaN(v)) setAutoOffsets(
-                            heater()!.startup_offset,
-                            Math.max(3, Math.min(10, v))
-                          );
-                        }}
-                      />
-                      <span class="offset-unit">°C</span>
-                    </label>
+                  <div class="stat-label">Min Temp</div>
+                  <div class="control-row">
+                    <void-button variant="outline" size="sm"
+                      onClick={() => adjustOffset('startup', -1)}>
+                      −
+                    </void-button>
+                    <span class="temp-display">
+                      {heater()!.startup_offset}°C
+                    </span>
+                    <void-button variant="outline" size="sm"
+                      onClick={() => adjustOffset('startup', 1)}>
+                      +
+                    </void-button>
+                  </div>
+                </div>
+                <div class="control-group">
+                  <div class="stat-label">Max Temp</div>
+                  <div class="control-row">
+                    <void-button variant="outline" size="sm"
+                      onClick={() => adjustOffset('shutdown', -1)}>
+                      −
+                    </void-button>
+                    <span class="temp-display">
+                      {heater()!.shutdown_offset}°C
+                    </span>
+                    <void-button variant="outline" size="sm"
+                      onClick={() => adjustOffset('shutdown', 1)}>
+                      +
+                    </void-button>
                   </div>
                 </div>
               </Show>
