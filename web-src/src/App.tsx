@@ -305,7 +305,7 @@ export default function App() {
                     <div class="stat-sm">{heater()!.power}</div>
                   </div>
                   <div class="stat-item">
-                    <div class="stat-label">Step</div>
+                    <div class="stat-label">State</div>
                     <div class="stat-sm">{heater()!.step}</div>
                   </div>
                   <div class="stat-item">
