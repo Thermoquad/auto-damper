@@ -812,6 +812,14 @@ static void heater_cmd_callback(const struct zbus_channel *chan)
       if (olen > 0) {
         bt_gatt_write_without_response(heater_conn, write_handle,
                                        obuf, olen, false);
+        if (active_protocol->encode_query_auto_offsets) {
+          int qlen = active_protocol->encode_query_auto_offsets(
+              obuf, sizeof(obuf));
+          if (qlen > 0) {
+            bt_gatt_write_without_response(heater_conn, write_handle,
+                                           obuf, qlen, false);
+          }
+        }
       }
     }
     break;
