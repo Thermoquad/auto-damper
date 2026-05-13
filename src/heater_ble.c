@@ -75,8 +75,11 @@ static void schedule_rescan(void);
 int heater_ble_scan(int timeout_sec);
 int heater_ble_connect(int index);
 
+static void offset_query_handler(struct k_work *work);
+
 static K_WORK_DELAYABLE_DEFINE(heartbeat_work, heartbeat_handler);
 static K_WORK_DELAYABLE_DEFINE(reconnect_work, reconnect_handler);
+static K_WORK_DELAYABLE_DEFINE(offset_query_work, offset_query_handler);
 
 #define RECONNECT_DELAY_MS 3000
 
@@ -150,6 +153,31 @@ static void start_heartbeat(void)
 static void stop_heartbeat(void)
 {
   k_work_cancel_delayable(&heartbeat_work);
+}
+
+static void offset_query_handler(struct k_work *work)
+{
+  ARG_UNUSED(work);
+
+  if (!heater_conn || !active_protocol || write_handle == 0) {
+    return;
+  }
+
+  uint8_t buf[16];
+
+  int pkt_len = active_protocol->encode_ping(buf, sizeof(buf));
+  if (pkt_len > 0) {
+    bt_gatt_write_without_response(heater_conn, write_handle, buf, pkt_len,
+                                   false);
+  }
+
+  if (active_protocol->encode_query_auto_offsets) {
+    int qlen = active_protocol->encode_query_auto_offsets(buf, sizeof(buf));
+    if (qlen > 0) {
+      bt_gatt_write_without_response(heater_conn, write_handle, buf, qlen,
+                                     false);
+    }
+  }
 }
 
 //////////////////////////////////////////////////////////////
@@ -812,14 +840,7 @@ static void heater_cmd_callback(const struct zbus_channel *chan)
       if (olen > 0) {
         bt_gatt_write_without_response(heater_conn, write_handle,
                                        obuf, olen, false);
-        if (active_protocol->encode_query_auto_offsets) {
-          int qlen = active_protocol->encode_query_auto_offsets(
-              obuf, sizeof(obuf));
-          if (qlen > 0) {
-            bt_gatt_write_without_response(heater_conn, write_handle,
-                                           obuf, qlen, false);
-          }
-        }
+        k_work_schedule(&offset_query_work, K_MSEC(500));
       }
     }
     break;
