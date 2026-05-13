@@ -43,6 +43,8 @@ struct heater_data {
   int target_temp;
   int power_level;
   bool altitude_mode;
+  int startup_offset;
+  int shutdown_offset;
   bool connected;
   char name[32];
   int64_t timestamp_us;
@@ -70,6 +72,9 @@ struct heater_protocol {
   int (*encode_set_mode)(uint8_t *buf, size_t len, enum heater_run_mode mode);
   int (*encode_adjust_power)(uint8_t *buf, size_t len, int delta);
   int (*encode_altitude)(uint8_t *buf, size_t len);
+  int (*encode_set_auto_offsets)(uint8_t *buf, size_t len,
+                                 int startup, int shutdown);
+  int (*encode_query_auto_offsets)(uint8_t *buf, size_t len);
 };
 
 //////////////////////////////////////////////////////////////

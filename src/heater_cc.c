@@ -40,6 +40,14 @@ static int cc_decode(const uint8_t *buf, size_t len, struct heater_data *data)
   if (buf[0] != 0xAB || buf[1] != 0xBA) {
     return -EPROTO;
   }
+  if (buf[3] == 0xDC) {
+    if (len < 8) {
+      return -EINVAL;
+    }
+    data->startup_offset = buf[4];
+    data->shutdown_offset = buf[5];
+    return 0;
+  }
   if (buf[3] != 0xCC) {
     return -EPROTO;
   }
@@ -186,6 +194,35 @@ static int cc_encode_altitude(uint8_t *buf, size_t len)
   return 8;
 }
 
+static int cc_encode_set_auto_offsets(uint8_t *buf, size_t len,
+                                      int startup, int shutdown)
+{
+  if (len < 8) {
+    return -ENOMEM;
+  }
+  buf[0] = 0xBA;
+  buf[1] = 0xAB;
+  buf[2] = 0x04;
+  buf[3] = 0xDA;
+  buf[4] = (uint8_t)startup;
+  buf[5] = (uint8_t)shutdown;
+  buf[6] = 0x00;
+  buf[7] = cc_checksum(buf, 7);
+  return 8;
+}
+
+static int cc_encode_query_auto_offsets(uint8_t *buf, size_t len)
+{
+  if (len < 8) {
+    return -ENOMEM;
+  }
+  uint8_t cmd[] = {0xBA, 0xAB, 0x04, 0xDC, 0x00, 0x00, 0x00};
+
+  memcpy(buf, cmd, 7);
+  buf[7] = cc_checksum(buf, 7);
+  return 8;
+}
+
 //////////////////////////////////////////////////////////////
 // Protocol Definition
 //////////////////////////////////////////////////////////////
@@ -204,4 +241,6 @@ const struct heater_protocol heater_protocol_cc = {
     .encode_set_mode = cc_encode_set_mode,
     .encode_adjust_power = cc_encode_adjust_power,
     .encode_altitude = cc_encode_altitude,
+    .encode_set_auto_offsets = cc_encode_set_auto_offsets,
+    .encode_query_auto_offsets = cc_encode_query_auto_offsets,
 };

@@ -189,7 +189,7 @@ static uint8_t notify_cb(struct bt_conn *conn,
     return BT_GATT_ITER_CONTINUE;
   }
 
-  struct heater_data hdata = {0};
+  struct heater_data hdata = last_heater_data;
   int ret = active_protocol->decode(data, length, &hdata);
 
   if (ret == 0) {
@@ -326,6 +326,16 @@ static void subscribe_notify(void)
 
   LOG_INF("Subscribed to notifications");
   start_heartbeat();
+
+  if (active_protocol && active_protocol->encode_query_auto_offsets &&
+      write_handle != 0) {
+    uint8_t qbuf[16];
+    int qlen = active_protocol->encode_query_auto_offsets(qbuf, sizeof(qbuf));
+    if (qlen > 0) {
+      bt_gatt_write_without_response(heater_conn, write_handle,
+                                     qbuf, qlen, false);
+    }
+  }
 }
 
 //////////////////////////////////////////////////////////////
@@ -789,6 +799,31 @@ static void heater_cmd_callback(const struct zbus_channel *chan)
       if (alen > 0) {
         bt_gatt_write_without_response(heater_conn, write_handle,
                                        abuf, alen, false);
+      }
+    }
+    break;
+  case HEATER_CMD_SET_AUTO_OFFSETS:
+    if (heater_conn && active_protocol &&
+        active_protocol->encode_set_auto_offsets && write_handle != 0) {
+      uint8_t obuf[16];
+      int olen = active_protocol->encode_set_auto_offsets(
+          obuf, sizeof(obuf), cmd->auto_offsets.startup,
+          cmd->auto_offsets.shutdown);
+      if (olen > 0) {
+        bt_gatt_write_without_response(heater_conn, write_handle,
+                                       obuf, olen, false);
+      }
+    }
+    break;
+  case HEATER_CMD_QUERY_AUTO_OFFSETS:
+    if (heater_conn && active_protocol &&
+        active_protocol->encode_query_auto_offsets && write_handle != 0) {
+      uint8_t obuf[16];
+      int olen = active_protocol->encode_query_auto_offsets(
+          obuf, sizeof(obuf));
+      if (olen > 0) {
+        bt_gatt_write_without_response(heater_conn, write_handle,
+                                       obuf, olen, false);
       }
     }
     break;

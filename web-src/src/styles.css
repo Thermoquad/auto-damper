@@ -352,3 +352,44 @@ body {
   gap: var(--void-space-3);
 }
 
+/* Heater Mode Controls (tab content) */
+.heater-mode-controls {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--void-space-5);
+  padding: var(--void-space-4) var(--void-space-5);
+}
+
+.offset-row {
+  display: flex;
+  gap: var(--void-space-3);
+}
+
+.offset-field {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-1);
+}
+
+.offset-label {
+  font-size: var(--void-text-xs);
+  opacity: 0.7;
+}
+
+.offset-input {
+  width: 4ch;
+  text-align: center;
+  font-family: var(--void-font-mono);
+  font-size: var(--void-text-sm);
+  background: var(--void-bg-subtle);
+  border: 1px solid var(--void-border);
+  border-radius: var(--void-radius-sm);
+  padding: var(--void-space-1);
+  color: inherit;
+}
+
+.offset-unit {
+  font-size: var(--void-text-xs);
+  opacity: 0.5;
+}
+

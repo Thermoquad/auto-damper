@@ -67,6 +67,8 @@ enum heater_cmd_type {
   HEATER_CMD_SET_TEMP,
   HEATER_CMD_ADJUST_POWER,
   HEATER_CMD_ALTITUDE,
+  HEATER_CMD_SET_AUTO_OFFSETS,
+  HEATER_CMD_QUERY_AUTO_OFFSETS,
   HEATER_CMD_RAW,
 };
 
@@ -79,6 +81,10 @@ struct heater_command {
     enum heater_run_mode mode;
     int temp;
     int power_delta;
+    struct {
+      int startup;
+      int shutdown;
+    } auto_offsets;
     struct {
       uint8_t data[16];
       uint8_t len;

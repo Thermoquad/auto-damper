@@ -310,6 +310,8 @@ static int cmd_ble_status(const struct shell *sh, size_t argc, char **argv)
   shell_print(sh, "  Target temp:  %d C", hdata.target_temp);
   shell_print(sh, "  Power level:  %d", hdata.power_level);
   shell_print(sh, "  Altitude:     %s", hdata.altitude_mode ? "yes" : "no");
+  shell_print(sh, "  Start offset: %d C", hdata.startup_offset);
+  shell_print(sh, "  Stop offset:  %d C", hdata.shutdown_offset);
   shell_print(sh, "  Error:        %d", hdata.error_code);
   return 0;
 }

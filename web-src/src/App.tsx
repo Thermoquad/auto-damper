@@ -104,9 +104,10 @@ export default function App() {
   };
   const setPower = (on: boolean) => heaterCmd({ power: on });
   const setMode = (mode: string) => heaterCmd({ mode });
-  const setTemp = (temp: number) => heaterCmd({ temp: Math.max(8, Math.min(36, temp)) });
   const adjustPower = (delta: number) => heaterCmd({ power_level: delta });
   const toggleAltitude = () => heaterCmd({ altitude: true });
+  const setAutoOffsets = (startup: number, shutdown: number) =>
+    heaterCmd({ startup_offset: startup, shutdown_offset: shutdown });
 
   const saveConfig = (field: string, value: number) => {
     sendCmd({ type: 'damper.config', [field]: value });
@@ -301,10 +302,6 @@ export default function App() {
                     <div class="stat-sm">{heater()!.step}</div>
                   </div>
                   <div class="stat-item">
-                    <div class="stat-label">Mode</div>
-                    <div class="stat-sm">{heater()!.mode}</div>
-                  </div>
-                  <div class="stat-item">
                     <div class="stat-label">Core</div>
                     <div class="stat-sm">{heater()!.exhaust_temp.toFixed(1)}°C</div>
                   </div>
@@ -315,14 +312,6 @@ export default function App() {
                   <div class="stat-item">
                     <div class="stat-label">Voltage</div>
                     <div class="stat-sm">{heater()!.voltage.toFixed(1)}V</div>
-                  </div>
-                  <div class="stat-item">
-                    <div class="stat-label">Target</div>
-                    <div class="stat-sm">{heater()!.target_temp}°C</div>
-                  </div>
-                  <div class="stat-item">
-                    <div class="stat-label">Power Lvl</div>
-                    <div class="stat-sm">{heater()!.power_level}</div>
                   </div>
                 </div>
                 <div class="heater-controls-bar">
@@ -341,70 +330,94 @@ export default function App() {
                       </void-button>
                     </div>
                   </div>
-                  <div class="control-group">
-                    <div class="stat-label">Mode</div>
-                    <div class="control-row">
-                      <void-button variant="outline" size="sm"
-                        onClick={() => setMode('manual')}>
-                        Manual
-                      </void-button>
-                      <void-button variant="outline" size="sm"
-                        onClick={() => setMode('automatic')}>
-                        Auto
-                      </void-button>
-                      <void-button variant="outline" size="sm"
-                        onClick={() => setMode('fan')}>
-                        Fan
-                      </void-button>
-                    </div>
-                  </div>
-                  <div class="control-group">
-                    <div class="stat-label">Target Temp</div>
-                    <div class="control-row">
-                      <void-button variant="outline" size="sm"
-                        onClick={() => setTemp(heater()!.target_temp - 1)}>
-                        −
-                      </void-button>
-                      <span class="temp-display">{heater()!.target_temp}°C</span>
-                      <void-button variant="outline" size="sm"
-                        onClick={() => setTemp(heater()!.target_temp + 1)}>
-                        +
-                      </void-button>
-                    </div>
-                  </div>
-                  <div class="control-group">
-                    <div class="stat-label">Power Level</div>
-                    <div class="control-row">
-                      <void-button variant="outline" size="sm"
-                        onClick={() => adjustPower(-1)}>
-                        −
-                      </void-button>
-                      <span class="temp-display">{heater()!.power_level}</span>
-                      <void-button variant="outline" size="sm"
-                        onClick={() => adjustPower(1)}>
-                        +
-                      </void-button>
-                    </div>
-                  </div>
-                  <div class="control-group">
-                    <div class="stat-label">Altitude</div>
-                    <div class="control-row">
-                      <void-button
-                        variant={heater()!.altitude_mode ? 'filled' : 'outline'}
-                        size="sm"
-                        color={heater()!.altitude_mode ? 'warning' : 'default'}
-                        onClick={toggleAltitude}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
-                          <path d="M7.5 11l2 2.5l2.5 -2.5l2 3l2.5 -2" />
-                        </svg>
-                      </void-button>
-                    </div>
-                  </div>
                 </div>
               </Show>
             </Show>
           </div>
+          <Show when={heaterConnected()}>
+            <div class="card-tabs">
+              <button class={`tab ${heater()!.mode === 'manual' ? 'active' : ''}`}
+                onClick={() => setMode('manual')}>Manual</button>
+              <button class={`tab ${heater()!.mode === 'automatic' ? 'active' : ''}`}
+                onClick={() => setMode('automatic')}>Auto</button>
+              <button class={`tab ${heater()!.mode === 'fan' ? 'active' : ''}`}
+                onClick={() => setMode('fan')}>Fan</button>
+            </div>
+            <div class="heater-mode-controls">
+              <div class="control-group">
+                <div class="stat-label">
+                  {heater()!.mode === 'automatic' ? 'Target Temp' : 'Power Level'}
+                </div>
+                <div class="control-row">
+                  <void-button variant="outline" size="sm"
+                    onClick={() => adjustPower(-1)}>
+                    −
+                  </void-button>
+                  <span class="temp-display">
+                    {heater()!.power_level}{heater()!.mode === 'automatic' ? '°C' : ''}
+                  </span>
+                  <void-button variant="outline" size="sm"
+                    onClick={() => adjustPower(1)}>
+                    +
+                  </void-button>
+                </div>
+              </div>
+              <Show when={heater()!.mode === 'automatic'}>
+                <div class="control-group">
+                  <div class="stat-label">Auto Offsets</div>
+                  <div class="offset-row">
+                    <label class="offset-field">
+                      <span class="offset-label">Start</span>
+                      <input type="number" min="3" max="10" step="1"
+                        class="offset-input"
+                        value={heater()!.startup_offset}
+                        onChange={(e) => {
+                          const v = parseInt(e.currentTarget.value);
+                          if (!isNaN(v)) setAutoOffsets(
+                            Math.max(3, Math.min(10, v)),
+                            heater()!.shutdown_offset
+                          );
+                        }}
+                      />
+                      <span class="offset-unit">°C</span>
+                    </label>
+                    <label class="offset-field">
+                      <span class="offset-label">Stop</span>
+                      <input type="number" min="3" max="10" step="1"
+                        class="offset-input"
+                        value={heater()!.shutdown_offset}
+                        onChange={(e) => {
+                          const v = parseInt(e.currentTarget.value);
+                          if (!isNaN(v)) setAutoOffsets(
+                            heater()!.startup_offset,
+                            Math.max(3, Math.min(10, v))
+                          );
+                        }}
+                      />
+                      <span class="offset-unit">°C</span>
+                    </label>
+                  </div>
+                </div>
+              </Show>
+              <Show when={heater()!.mode !== 'fan'}>
+                <div class="control-group">
+                  <div class="stat-label">Altitude</div>
+                  <div class="control-row">
+                    <void-button
+                      variant={heater()!.altitude_mode ? 'filled' : 'outline'}
+                      size="sm"
+                      color={heater()!.altitude_mode ? 'warning' : 'default'}
+                      onClick={toggleAltitude}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
+                        <path d="M7.5 11l2 2.5l2.5 -2.5l2 3l2.5 -2" />
+                      </svg>
+                    </void-button>
+                  </div>
+                </div>
+              </Show>
+            </div>
+          </Show>
         </section>
 
       </main>

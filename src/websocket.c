@@ -140,7 +140,9 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
           "\"power_level\":%d,\"error\":%d,"
-          "\"altitude_mode\":%s,\"connected\":%s}",
+          "\"altitude_mode\":%s,"
+          "\"startup_offset\":%d,\"shutdown_offset\":%d,"
+          "\"connected\":%s}",
           data.name[0] ? "\"" : "",
           data.name[0] ? data.name : "null",
           data.name[0] ? "\"" : "",
@@ -151,6 +153,7 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           data.voltage, data.target_temp,
           data.power_level, data.error_code,
           data.altitude_mode ? "true" : "false",
+          data.startup_offset, data.shutdown_offset,
           data.connected ? "true" : "false");
     } else if (chan == &heater_devices_chan) {
       struct heater_devices devs;
@@ -465,8 +468,16 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       cmd.power_delta = int_val;
     } else if (ws_json_get_bool(msg, "altitude", &power_val)) {
       cmd.type = HEATER_CMD_ALTITUDE;
+    } else if (ws_json_get_int(msg, "startup_offset", &int_val)) {
+      cmd.type = HEATER_CMD_SET_AUTO_OFFSETS;
+      cmd.auto_offsets.startup = int_val;
+      if (!ws_json_get_int(msg, "shutdown_offset", &int_val)) {
+        ws_send_result(slot, false, "need shutdown_offset");
+        return;
+      }
+      cmd.auto_offsets.shutdown = int_val;
     } else {
-      ws_send_result(slot, false, "need power, mode, temp, power_level, or altitude");
+      ws_send_result(slot, false, "need power, mode, temp, power_level, altitude, or offsets");
       return;
     }
     zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));

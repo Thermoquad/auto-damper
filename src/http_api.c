@@ -473,7 +473,8 @@ static int heater_item(const char *url, enum http_method method,
           "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
           "\"power_level\":%d,\"error\":%d,"
-          "\"altitude_mode\":%s}}",
+          "\"altitude_mode\":%s,"
+          "\"startup_offset\":%d,\"shutdown_offset\":%d}}",
           devs.devices[idx].name, devs.devices[idx].protocol,
           heater_power_state_str(hdata.power),
           heater_run_step_str(hdata.step),
@@ -481,7 +482,8 @@ static int heater_item(const char *url, enum http_method method,
           hdata.exhaust_temp_c, hdata.ambient_temp_c,
           hdata.voltage, hdata.target_temp,
           hdata.power_level, hdata.error_code,
-          hdata.altitude_mode ? "true" : "false");
+          hdata.altitude_mode ? "true" : "false",
+          hdata.startup_offset, hdata.shutdown_offset);
       return send_json(rsp, heater_buf, len);
     }
 
@@ -541,9 +543,16 @@ static int heater_item(const char *url, enum http_method method,
       cmd.power_delta = int_val;
     } else if (json_get_bool(heater_body, "altitude", &power_val)) {
       cmd.type = HEATER_CMD_ALTITUDE;
+    } else if (json_get_int(heater_body, "startup_offset", &int_val)) {
+      cmd.type = HEATER_CMD_SET_AUTO_OFFSETS;
+      cmd.auto_offsets.startup = int_val;
+      if (!json_get_int(heater_body, "shutdown_offset", &int_val)) {
+        return send_error(rsp, heater_buf, 400, "need shutdown_offset");
+      }
+      cmd.auto_offsets.shutdown = int_val;
     } else {
       return send_error(rsp, heater_buf, 400,
-                        "need power, mode, temp, power_level, or altitude");
+                        "need power, mode, temp, power_level, altitude, or offsets");
     }
 
     zbus_chan_pub(&heater_command_chan, &cmd, PUB_TIMEOUT);

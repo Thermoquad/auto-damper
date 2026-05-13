@@ -23,6 +23,8 @@ export type HeaterMsg = {
   power_level: number;
   error: number;
   altitude_mode: boolean;
+  startup_offset: number;
+  shutdown_offset: number;
   connected: boolean;
 };
 export type HeaterDevice = { name: string; rssi: number; protocol: string };
