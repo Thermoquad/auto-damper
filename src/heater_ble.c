@@ -676,16 +676,16 @@ int heater_ble_send_power(bool on)
   }
 
   uint8_t buf[16];
-  int pkt_len = active_protocol->encode_power(buf, sizeof(buf), on);
+  int pkt_len;
 
-  if (pkt_len == -ENOTSUP && !on && active_protocol->encode_set_mode) {
-    /* Protocol has no dedicated off command (e.g. CC uses toggles).
-       Re-send the current mode to toggle it off. */
-    enum heater_run_mode mode = last_heater_data.mode;
-    if (mode == 0) {
-      mode = HEATER_MODE_MANUAL;
-    }
-    pkt_len = active_protocol->encode_set_mode(buf, sizeof(buf), mode);
+  if (!on && last_heater_data.mode == HEATER_MODE_FAN &&
+      active_protocol->encode_set_mode) {
+    /* CC fan mode needs its own toggle (0xA4) — the generic power
+       toggle (0xA1) would switch to heating instead of off. */
+    pkt_len = active_protocol->encode_set_mode(buf, sizeof(buf),
+                                               HEATER_MODE_FAN);
+  } else {
+    pkt_len = active_protocol->encode_power(buf, sizeof(buf), on);
   }
 
   if (pkt_len < 0) {
