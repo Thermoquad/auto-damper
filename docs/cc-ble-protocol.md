@@ -59,10 +59,21 @@ Response frames use reversed magic: `0xAB 0xBA`.
 | `BA AB 04 EC 00 00 00` | `...55` | Get timing schedule |
 | `BA AB 04 DC 00 00 00` | `...45` | Query auto start/stop config |
 | `BA AB 05 EA HH MM SS WW` | variable | Sync clock (hour, min, sec, day-of-week) |
-| `BA AB 04 DA ST SP UN` | variable | Set auto start/stop temps |
+| `BA AB 04 DA ST SP UN` | variable | Set auto start/stop offsets (requires heater powered on) |
 | `BA AB 24 ED` + 35 bytes | variable | Save 7-day timing schedule |
 
-**Two-step write pattern:** After every command, send the heartbeat again 500ms later, then wait another 500ms.
+### Two-Step Write Pattern (REQUIRED)
+
+**Every command write MUST be followed by a heartbeat ping 500ms later.** Without the confirming ping, the heater silently ignores the command. This applies to all commands, not just configuration writes.
+
+```
+1. Write command packet
+2. Wait 500ms
+3. Write heartbeat: BA AB 04 CC 00 00 00 35
+4. Wait 500ms (before next command)
+```
+
+The decompiled app (`sendData$1`) enforces this universally. Commands that skip step 3 will appear to succeed (no error) but have no effect on the heater.
 
 ---
 
@@ -150,7 +161,26 @@ For day i (0=Sunday ... 6=Saturday):
 
 ---
 
-## Auto Start/Stop Config Response (8 bytes)
+## Auto Start/Stop Set Command (0xDA, 8 bytes)
+
+```
+Byte 0: 0xBA           (magic)
+Byte 1: 0xAB           (magic)
+Byte 2: 0x04           (length)
+Byte 3: 0xDA           (command)
+Byte 4: startup offset (3-10 °C, 5-18 °F)
+Byte 5: shutdown offset (3-10 °C, 5-18 °F)
+Byte 6: unit (0x00 = °C, 0x01 = °F)
+Byte 7: checksum
+```
+
+**No response.** The heater does not send any reply to 0xDA. The two-step write pattern (ping after 500ms) is required for the heater to commit the values. To verify the write, send a 0xDC query after the confirming ping.
+
+**Only works when the heater is powered on.** The heater silently ignores 0xDA when off.
+
+---
+
+## Auto Start/Stop Config Response (0xDC, 8 bytes)
 
 Prefix: `AB BA 04 DC`
 
