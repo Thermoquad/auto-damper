@@ -34,22 +34,22 @@ static uint8_t cc_checksum(const uint8_t *buf, size_t len)
 
 static int cc_decode(const uint8_t *buf, size_t len, struct heater_data *data)
 {
-  if (len < 19) {
+  if (len < 8) {
     return -EINVAL;
   }
   if (buf[0] != 0xAB || buf[1] != 0xBA) {
     return -EPROTO;
   }
   if (buf[3] == 0xDC) {
-    if (len < 8) {
-      return -EINVAL;
-    }
     data->startup_offset = buf[4];
     data->shutdown_offset = buf[5];
     return 0;
   }
   if (buf[3] != 0xCC) {
     return -EPROTO;
+  }
+  if (len < 19) {
+    return -EINVAL;
   }
 
   switch (buf[4]) {

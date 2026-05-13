@@ -150,15 +150,22 @@ For day i (0=Sunday ... 6=Saturday):
 
 ---
 
-## Auto Start/Stop Config Response (7 bytes)
+## Auto Start/Stop Config Response (8 bytes)
 
 Prefix: `AB BA 04 DC`
 
 ```
-Byte 4: startup offset temperature
-Byte 5: shutdown offset temperature
+Byte 0: 0xAB           (magic)
+Byte 1: 0xBA           (magic)
+Byte 2: 0x04           (length)
+Byte 3: 0xDC           (command echo)
+Byte 4: startup offset temperature (3-10 °C, 5-18 °F)
+Byte 5: shutdown offset temperature (3-10 °C, 5-18 °F)
 Byte 6: unit (0x00 = °C, 0x01 = °F)
+Byte 7: checksum
 ```
+
+Offsets are relative to the target temperature setpoint. The heater starts heating when ambient drops `startup_offset` degrees below target, and stops when it rises `shutdown_offset` degrees above target. Query with `0xDC`; the heater does **not** echo a response after receiving `0xDA` (set). The `0xCC` telemetry frame does not include offset values — only the auto-enabled flag (byte 8).
 
 ---
 
