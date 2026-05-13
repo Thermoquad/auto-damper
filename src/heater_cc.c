@@ -129,14 +129,11 @@ static int cc_encode_power(uint8_t *buf, size_t len, bool on)
     return -ENOMEM;
   }
 
-  if (on) {
-    cc_cmd(buf, 0xBB, 0xA1);
-    return 8;
-  }
-
-  /* CC has no dedicated off command — caller must re-send the
-     current mode's toggle via encode_set_mode instead. */
-  return -ENOTSUP;
+  /* 0xA1 is a heating toggle — starts heating when off, stops when
+     heating. For fan mode, caller must use encode_set_mode(FAN)
+     to send the blowing toggle 0xA4 instead. */
+  cc_cmd(buf, 0xBB, 0xA1);
+  return 8;
 }
 
 static int cc_encode_set_temp(uint8_t *buf, size_t len, int temp_c)
@@ -156,10 +153,10 @@ static int cc_encode_set_mode(uint8_t *buf, size_t len,
 
   switch (mode) {
   case HEATER_MODE_MANUAL:
-    cc_cmd(buf, 0xBB, 0xAD);
+    cc_cmd(buf, 0xBB, 0xAC);
     break;
   case HEATER_MODE_AUTOMATIC:
-    cc_cmd(buf, 0xBB, 0xAC);
+    cc_cmd(buf, 0xBB, 0xAD);
     break;
   case HEATER_MODE_FAN:
     cc_cmd(buf, 0xBB, 0xA4);

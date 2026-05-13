@@ -48,8 +48,8 @@ Response frames use reversed magic: `0xAB 0xBA`.
 | `BA AB 04 BB A4 00 00` | `...C8` | Start blowing (ventilation) mode |
 | `BA AB 04 BB A2 00 00` | `...C6` | Temp/gear increase |
 | `BA AB 04 BB A3 00 00` | `...C7` | Temp/gear decrease |
-| `BA AB 04 BB AC 00 00` | `...D0` | Switch to constant-temp mode |
-| `BA AB 04 BB AD 00 00` | `...D1` | Switch to manual mode |
+| `BA AB 04 BB AC 00 00` | `...D0` | Switch to manual mode |
+| `BA AB 04 BB AD 00 00` | `...D1` | Switch to constant-temp mode |
 | `BA AB 04 BB A5 00 00` | `...C9` | Enable high-altitude mode |
 | `BA AB 04 BB A6 00 00` | `...CA` | Toggle auto start/stop |
 | `BA AB 04 BB A7 00 00` | `...CB` | Set unit: Celsius |
