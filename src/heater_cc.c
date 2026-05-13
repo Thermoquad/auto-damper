@@ -55,7 +55,8 @@ static int cc_decode(const uint8_t *buf, size_t len, struct heater_data *data)
     break;
   case 0x04:
     data->power = HEATER_POWER_RUNNING;
-    data->step = HEATER_STEP_IDLE;
+    data->mode = HEATER_MODE_FAN;
+    data->step = HEATER_STEP_BLOWING;
     break;
   case 0x06:
     data->power = HEATER_POWER_RUNNING;
@@ -67,16 +68,18 @@ static int cc_decode(const uint8_t *buf, size_t len, struct heater_data *data)
     break;
   }
 
-  switch (buf[5]) {
-  case 0x00:
-    data->mode = HEATER_MODE_MANUAL;
-    break;
-  case 0x01:
-    data->mode = HEATER_MODE_AUTOMATIC;
-    break;
-  case 0xFF:
-    data->error_code = buf[6];
-    break;
+  if (buf[4] != 0x04) {
+    switch (buf[5]) {
+    case 0x00:
+      data->mode = HEATER_MODE_MANUAL;
+      break;
+    case 0x01:
+      data->mode = HEATER_MODE_AUTOMATIC;
+      break;
+    case 0xFF:
+      data->error_code = buf[6];
+      break;
+    }
   }
 
   if (buf[5] != 0xFF) {
@@ -125,12 +128,15 @@ static int cc_encode_power(uint8_t *buf, size_t len, bool on)
   if (len < 8) {
     return -ENOMEM;
   }
-  if (!on) {
-    return -ENOTSUP;
+
+  if (on) {
+    cc_cmd(buf, 0xBB, 0xA1);
+    return 8;
   }
 
-  cc_cmd(buf, 0xBB, 0xA1);
-  return 8;
+  /* CC has no dedicated off command — caller must re-send the
+     current mode's toggle via encode_set_mode instead. */
+  return -ENOTSUP;
 }
 
 static int cc_encode_set_temp(uint8_t *buf, size_t len, int temp_c)

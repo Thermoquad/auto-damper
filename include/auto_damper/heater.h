@@ -23,6 +23,7 @@ enum heater_run_step {
   HEATER_STEP_PREHEAT,
   HEATER_STEP_HEATING,
   HEATER_STEP_COOLING,
+  HEATER_STEP_BLOWING,
 };
 
 enum heater_run_mode {
