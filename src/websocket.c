@@ -139,7 +139,8 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
           "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
-          "\"power_level\":%d,\"error\":%d,\"connected\":%s}",
+          "\"power_level\":%d,\"error\":%d,"
+          "\"altitude_mode\":%s,\"connected\":%s}",
           data.name[0] ? "\"" : "",
           data.name[0] ? data.name : "null",
           data.name[0] ? "\"" : "",
@@ -149,6 +150,7 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           data.exhaust_temp_c, data.ambient_temp_c,
           data.voltage, data.target_temp,
           data.power_level, data.error_code,
+          data.altitude_mode ? "true" : "false",
           data.connected ? "true" : "false");
     } else if (chan == &heater_devices_chan) {
       struct heater_devices devs;
@@ -461,8 +463,10 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     } else if (ws_json_get_int(msg, "power_level", &int_val)) {
       cmd.type = HEATER_CMD_ADJUST_POWER;
       cmd.power_delta = int_val;
+    } else if (ws_json_get_bool(msg, "altitude", &power_val)) {
+      cmd.type = HEATER_CMD_ALTITUDE;
     } else {
-      ws_send_result(slot, false, "need power, mode, temp, or power_level");
+      ws_send_result(slot, false, "need power, mode, temp, power_level, or altitude");
       return;
     }
     zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));

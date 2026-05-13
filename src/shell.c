@@ -309,6 +309,7 @@ static int cmd_ble_status(const struct shell *sh, size_t argc, char **argv)
               heater_run_mode_str(hdata.mode));
   shell_print(sh, "  Target temp:  %d C", hdata.target_temp);
   shell_print(sh, "  Power level:  %d", hdata.power_level);
+  shell_print(sh, "  Altitude:     %s", hdata.altitude_mode ? "yes" : "no");
   shell_print(sh, "  Error:        %d", hdata.error_code);
   return 0;
 }

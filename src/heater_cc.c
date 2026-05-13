@@ -90,6 +90,7 @@ static int cc_decode(const uint8_t *buf, size_t len, struct heater_data *data)
   data->voltage = (double)buf[9];
   data->ambient_temp_c = (double)buf[11] - 30.0;
   data->exhaust_temp_c = (double)((buf[12] << 8) | buf[13]);
+  data->altitude_mode = (buf[15] == 0x01);
   data->connected = true;
 
   return 0;
@@ -176,6 +177,15 @@ static int cc_encode_adjust_power(uint8_t *buf, size_t len, int delta)
   return 8;
 }
 
+static int cc_encode_altitude(uint8_t *buf, size_t len)
+{
+  if (len < 8) {
+    return -ENOMEM;
+  }
+  cc_cmd(buf, 0xBB, 0xA5);
+  return 8;
+}
+
 //////////////////////////////////////////////////////////////
 // Protocol Definition
 //////////////////////////////////////////////////////////////
@@ -193,4 +203,5 @@ const struct heater_protocol heater_protocol_cc = {
     .encode_set_temp = cc_encode_set_temp,
     .encode_set_mode = cc_encode_set_mode,
     .encode_adjust_power = cc_encode_adjust_power,
+    .encode_altitude = cc_encode_altitude,
 };

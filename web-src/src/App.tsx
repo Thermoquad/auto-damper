@@ -106,6 +106,7 @@ export default function App() {
   const setMode = (mode: string) => heaterCmd({ mode });
   const setTemp = (temp: number) => heaterCmd({ temp: Math.max(8, Math.min(36, temp)) });
   const adjustPower = (delta: number) => heaterCmd({ power_level: delta });
+  const toggleAltitude = () => heaterCmd({ altitude: true });
 
   const saveConfig = (field: string, value: number) => {
     sendCmd({ type: 'damper.config', [field]: value });
@@ -382,6 +383,21 @@ export default function App() {
                       <void-button variant="outline" size="sm"
                         onClick={() => adjustPower(1)}>
                         +
+                      </void-button>
+                    </div>
+                  </div>
+                  <div class="control-group">
+                    <div class="stat-label">Altitude</div>
+                    <div class="control-row">
+                      <void-button
+                        variant={heater()!.altitude_mode ? 'filled' : 'outline'}
+                        size="sm"
+                        color={heater()!.altitude_mode ? 'warning' : 'default'}
+                        onClick={toggleAltitude}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
+                          <path d="M7.5 11l2 2.5l2.5 -2.5l2 3l2.5 -2" />
+                        </svg>
                       </void-button>
                     </div>
                   </div>
