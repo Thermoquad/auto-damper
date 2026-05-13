@@ -812,6 +812,10 @@ static void heater_cmd_callback(const struct zbus_channel *chan)
       if (olen > 0) {
         bt_gatt_write_without_response(heater_conn, write_handle,
                                        obuf, olen, false);
+        last_heater_data.startup_offset = cmd->auto_offsets.startup;
+        last_heater_data.shutdown_offset = cmd->auto_offsets.shutdown;
+        zbus_chan_pub(&heater_data_chan, &last_heater_data,
+                      K_MSEC(100));
       }
     }
     break;
