@@ -61,6 +61,7 @@ static struct bt_gatt_discover_params ccc_disc_params;
 
 static int connected_index = -1;
 static bool auto_reconnect;
+static struct heater_data last_heater_data;
 
 //////////////////////////////////////////////////////////////
 // Forward Declarations
@@ -198,6 +199,7 @@ static uint8_t notify_cb(struct bt_conn *conn,
       strncpy(hdata.name, scan_results[connected_index].name,
               sizeof(hdata.name) - 1);
     }
+    last_heater_data = hdata;
     zbus_chan_pub(&heater_data_chan, &hdata, K_MSEC(100));
   } else {
     LOG_DBG("Decode failed: %d (len=%u)", ret, length);
@@ -676,6 +678,16 @@ int heater_ble_send_power(bool on)
   uint8_t buf[16];
   int pkt_len = active_protocol->encode_power(buf, sizeof(buf), on);
 
+  if (pkt_len == -ENOTSUP && !on && active_protocol->encode_set_mode) {
+    /* Protocol has no dedicated off command (e.g. CC uses toggles).
+       Re-send the current mode to toggle it off. */
+    enum heater_run_mode mode = last_heater_data.mode;
+    if (mode == 0) {
+      mode = HEATER_MODE_MANUAL;
+    }
+    pkt_len = active_protocol->encode_set_mode(buf, sizeof(buf), mode);
+  }
+
   if (pkt_len < 0) {
     return pkt_len;
   }
@@ -801,6 +813,7 @@ const char *heater_run_step_str(enum heater_run_step s)
   case HEATER_STEP_PREHEAT: return "PREHEAT";
   case HEATER_STEP_HEATING: return "HEATING";
   case HEATER_STEP_COOLING: return "COOLING";
+  case HEATER_STEP_BLOWING: return "BLOWING";
   default: return "UNKNOWN";
   }
 }
