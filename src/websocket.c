@@ -122,11 +122,15 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
       len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
           "{\"type\":\"damper\",\"mode\":\"%s\",\"route\":\"%s\","
           "\"angle\":%.1f,\"inside_angle\":%.1f,\"outside_angle\":%.1f,"
-          "\"core_threshold\":%.1f,\"heater_name\":%s%s%s}",
-          data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
+          "\"core_threshold\":%.1f,\"cool_setpoint\":%.1f,"
+          "\"cool_hysteresis\":%.1f,\"heater_name\":%s%s%s}",
+          data.mode == DAMPER_MODE_AUTO ? "auto" :
+          data.mode == DAMPER_MODE_HEATING ? "heating" :
+          data.mode == DAMPER_MODE_COOLING ? "cooling" : "manual",
           data.route == DAMPER_ROUTE_INSIDE ? "inside" : "outside",
           data.angle, data.inside_angle, data.outside_angle,
-          data.core_threshold,
+          data.core_threshold, data.cool_setpoint,
+          data.cool_hysteresis,
           data.heater_name[0] ? "\"" : "",
           data.heater_name[0] ? data.heater_name : "null",
           data.heater_name[0] ? "\"" : "");
@@ -285,6 +289,7 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     double angle;
     bool auto_mode;
 
+    char mode_str[16];
     if (ws_json_get_double(msg, "angle", &angle)) {
       struct servo_config *cfg = servo_config_get();
       if (angle < 0 || angle > cfg->max_deg) {
@@ -297,17 +302,26 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       };
       zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     } else if (ws_json_get_bool(msg, "auto", &auto_mode) && auto_mode) {
-      struct damper_command cmd = {.type = DAMPER_CMD_SET_AUTO};
+      struct damper_command cmd = {.type = DAMPER_CMD_SET_MODE,
+                                   .mode = DAMPER_MODE_AUTO};
+      zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
+    } else if (ws_json_get_string(msg, "mode", mode_str, sizeof(mode_str))) {
+      struct damper_command cmd = {.type = DAMPER_CMD_SET_MODE};
+      if (strcmp(mode_str, "auto") == 0) cmd.mode = DAMPER_MODE_AUTO;
+      else if (strcmp(mode_str, "manual") == 0) cmd.mode = DAMPER_MODE_MANUAL;
+      else if (strcmp(mode_str, "heating") == 0) cmd.mode = DAMPER_MODE_HEATING;
+      else if (strcmp(mode_str, "cooling") == 0) cmd.mode = DAMPER_MODE_COOLING;
+      else { ws_send_result(slot, false, "invalid mode"); return; }
       zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     } else {
-      ws_send_result(slot, false, "need angle or auto");
+      ws_send_result(slot, false, "need angle, auto, or mode");
       return;
     }
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "damper.config") == 0) {
     struct damper_config *cfg = damper_config_get();
-    double inside, outside, threshold;
+    double inside, outside, threshold, cool_sp, cool_hy;
 
     if (ws_json_get_double(msg, "inside_angle", &inside)) {
       cfg->inside_angle = inside;
@@ -324,12 +338,24 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     } else {
       threshold = cfg->core_threshold;
     }
+    if (ws_json_get_double(msg, "cool_setpoint", &cool_sp)) {
+      cfg->cool_setpoint = cool_sp;
+    } else {
+      cool_sp = cfg->cool_setpoint;
+    }
+    if (ws_json_get_double(msg, "cool_hysteresis", &cool_hy)) {
+      cfg->cool_hysteresis = cool_hy;
+    } else {
+      cool_hy = cfg->cool_hysteresis;
+    }
 
     struct damper_command cmd = {
         .type = DAMPER_CMD_SET_CONFIG,
         .inside_angle = inside,
         .outside_angle = outside,
         .core_threshold = threshold,
+        .cool_setpoint = cool_sp,
+        .cool_hysteresis = cool_hy,
     };
     zbus_chan_pub(&damper_command_chan, &cmd, K_MSEC(100));
     int rc = damper_last_config_result();
@@ -350,11 +376,15 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
         "{\"type\":\"damper\",\"mode\":\"%s\",\"route\":\"%s\","
         "\"angle\":%.1f,\"inside_angle\":%.1f,\"outside_angle\":%.1f,"
-        "\"core_threshold\":%.1f,\"heater_name\":%s%s%s}",
-        data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
+        "\"core_threshold\":%.1f,\"cool_setpoint\":%.1f,"
+        "\"cool_hysteresis\":%.1f,\"heater_name\":%s%s%s}",
+        data.mode == DAMPER_MODE_AUTO ? "auto" :
+        data.mode == DAMPER_MODE_HEATING ? "heating" :
+        data.mode == DAMPER_MODE_COOLING ? "cooling" : "manual",
         data.route == DAMPER_ROUTE_INSIDE ? "inside" : "outside",
         data.angle, data.inside_angle, data.outside_angle,
-        data.core_threshold,
+        data.core_threshold, data.cool_setpoint,
+        data.cool_hysteresis,
         data.heater_name[0] ? "\"" : "",
         data.heater_name[0] ? data.heater_name : "null",
         data.heater_name[0] ? "\"" : "");

@@ -27,6 +27,8 @@ struct damper_config {
   double outside_angle;
   double core_threshold;
   char heater_name[32];
+  double cool_setpoint;
+  double cool_hysteresis;
 };
 
 struct damper_config *damper_config_get(void);

@@ -83,12 +83,12 @@ export default function App() {
       pendingAngle = undefined;
     }
   };
-  const isAuto = () => damper()?.mode === 'auto';
-  const toggleMode = () => {
-    if (isAuto()) {
+  const isManual = () => damper()?.mode === 'manual';
+  const setDamperMode = (mode: string) => {
+    if (mode === 'manual') {
       send({ type: 'damper.set', angle: localAngle() });
     } else {
-      send({ type: 'damper.set', auto: true });
+      send({ type: 'damper.set', mode });
     }
   };
   const heaterCmd = (cmd: Record<string, unknown>) =>
@@ -172,7 +172,7 @@ export default function App() {
                 <input
                   type="range" min="0" max="270" step="0.5"
                   class="angle-slider"
-                  disabled={isAuto()}
+                  disabled={!isManual()}
                   value={localAngle()}
                   onPointerDown={() => setSliding(true)}
                   onInput={(e) => {
@@ -187,7 +187,7 @@ export default function App() {
                 <input
                   type="number" min="0" max="270" step="0.5"
                   class="angle-input"
-                  disabled={isAuto()}
+                  disabled={!isManual()}
                   value={localAngle().toFixed(1)}
                   onChange={(e) => {
                     const v = parseFloat(e.currentTarget.value);
@@ -196,12 +196,15 @@ export default function App() {
                 />
               </div>
               <div class="mode-toggle-row">
-                <void-button
-                  variant="filled" size="sm"
-                  color={isAuto() ? 'info' : 'notice'}
-                  onClick={toggleMode}>
-                  {isAuto() ? 'Auto' : 'Manual'}
-                </void-button>
+                {(['auto', 'heating', 'cooling', 'manual'] as const).map(m => (
+                  <void-button
+                    variant={damper()?.mode === m ? 'filled' : 'outline'}
+                    size="sm"
+                    color={damper()?.mode === m ? 'info' : 'default'}
+                    onClick={() => setDamperMode(m)}>
+                    {m[0].toUpperCase() + m.slice(1)}
+                  </void-button>
+                ))}
               </div>
             </div>
           </Show>
@@ -237,7 +240,7 @@ export default function App() {
                 </div>
               </div>
               <div class="config-section">
-                <span class="stat-label">Auto Routing</span>
+                <span class="stat-label">Heating</span>
                 <div class="config-row">
                   <span class="config-unit">Core Threshold</span>
                   <input
@@ -265,6 +268,35 @@ export default function App() {
                       ))}
                     </select>
                   </Show>
+                </div>
+              </div>
+              <div class="config-section">
+                <span class="stat-label">Cooling</span>
+                <div class="config-row">
+                  <span class="config-unit">Setpoint</span>
+                  <input
+                    type="number" class="config-temp-input"
+                    min="0" max="50" step="1"
+                    value={damper()?.cool_setpoint?.toFixed(0) ?? '25'}
+                    onChange={(e) => {
+                      const v = parseFloat(e.currentTarget.value);
+                      if (!isNaN(v)) saveConfig('cool_setpoint', v);
+                    }}
+                  />
+                  <span class="config-unit">°C</span>
+                </div>
+                <div class="config-row">
+                  <span class="config-unit">Hysteresis</span>
+                  <input
+                    type="number" class="config-temp-input"
+                    min="0" max="20" step="1"
+                    value={damper()?.cool_hysteresis?.toFixed(0) ?? '4'}
+                    onChange={(e) => {
+                      const v = parseFloat(e.currentTarget.value);
+                      if (!isNaN(v)) saveConfig('cool_hysteresis', v);
+                    }}
+                  />
+                  <span class="config-unit">°C</span>
                 </div>
               </div>
             </div>

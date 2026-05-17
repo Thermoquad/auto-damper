@@ -207,14 +207,21 @@ static int damper_state_get(struct http_response_ctx *rsp)
   struct damper_data data = {0};
   zbus_chan_read(&damper_data_chan, &data, PUB_TIMEOUT);
 
+  const char *mode_str =
+      data.mode == DAMPER_MODE_AUTO ? "auto" :
+      data.mode == DAMPER_MODE_HEATING ? "heating" :
+      data.mode == DAMPER_MODE_COOLING ? "cooling" : "manual";
+
   int len = snprintf(damper_buf, sizeof(damper_buf),
       "{\"mode\":\"%s\",\"route\":\"%s\",\"angle\":%.1f,"
       "\"inside_angle\":%.1f,\"outside_angle\":%.1f,"
-      "\"core_threshold\":%.1f,\"heater_name\":%s%s%s}",
-      data.mode == DAMPER_MODE_AUTO ? "auto" : "manual",
+      "\"core_threshold\":%.1f,\"cool_setpoint\":%.1f,"
+      "\"cool_hysteresis\":%.1f,\"heater_name\":%s%s%s}",
+      mode_str,
       data.route == DAMPER_ROUTE_INSIDE ? "inside" : "outside",
       data.angle, data.inside_angle, data.outside_angle,
-      data.core_threshold,
+      data.core_threshold, data.cool_setpoint,
+      data.cool_hysteresis,
       data.heater_name[0] ? "\"" : "",
       data.heater_name[0] ? data.heater_name : "null",
       data.heater_name[0] ? "\"" : "");
@@ -232,6 +239,8 @@ static int damper_state_patch(const struct http_request_ctx *req,
   double angle;
   bool auto_mode;
 
+  char mode_str[16];
+
   if (json_get_double(damper_body, "angle", &angle)) {
     struct servo_config *cfg = servo_config_get();
     if (angle < 0 || angle > cfg->max_deg) {
@@ -242,11 +251,20 @@ static int damper_state_patch(const struct http_request_ctx *req,
         .angle = angle,
     };
     zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
+  } else if (json_get_string(damper_body, "mode", mode_str, sizeof(mode_str))) {
+    struct damper_command cmd = {.type = DAMPER_CMD_SET_MODE};
+    if (strcmp(mode_str, "auto") == 0) cmd.mode = DAMPER_MODE_AUTO;
+    else if (strcmp(mode_str, "manual") == 0) cmd.mode = DAMPER_MODE_MANUAL;
+    else if (strcmp(mode_str, "heating") == 0) cmd.mode = DAMPER_MODE_HEATING;
+    else if (strcmp(mode_str, "cooling") == 0) cmd.mode = DAMPER_MODE_COOLING;
+    else return send_error(rsp, damper_buf, 400, "invalid mode");
+    zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
   } else if (json_get_bool(damper_body, "auto", &auto_mode) && auto_mode) {
-    struct damper_command cmd = {.type = DAMPER_CMD_SET_AUTO};
+    struct damper_command cmd = {.type = DAMPER_CMD_SET_MODE,
+                                 .mode = DAMPER_MODE_AUTO};
     zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
   } else {
-    return send_error(rsp, damper_buf, 400, "need angle or auto field");
+    return send_error(rsp, damper_buf, 400, "need angle or mode field");
   }
 
   return send_ok(rsp, damper_buf);
@@ -260,21 +278,27 @@ static int damper_config_handler(const struct http_request_ctx *req,
   }
 
   struct damper_config *cfg = damper_config_get();
-  double inside, outside, threshold;
+  double inside, outside, threshold, cool_sp, cool_hy;
 
   inside = cfg->inside_angle;
   outside = cfg->outside_angle;
   threshold = cfg->core_threshold;
+  cool_sp = cfg->cool_setpoint;
+  cool_hy = cfg->cool_hysteresis;
 
   json_get_double(damper_body, "inside_angle", &inside);
   json_get_double(damper_body, "outside_angle", &outside);
   json_get_double(damper_body, "core_threshold", &threshold);
+  json_get_double(damper_body, "cool_setpoint", &cool_sp);
+  json_get_double(damper_body, "cool_hysteresis", &cool_hy);
 
   struct damper_command cmd = {
       .type = DAMPER_CMD_SET_CONFIG,
       .inside_angle = inside,
       .outside_angle = outside,
       .core_threshold = threshold,
+      .cool_setpoint = cool_sp,
+      .cool_hysteresis = cool_hy,
   };
   zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
 

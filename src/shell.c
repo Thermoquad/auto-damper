@@ -42,9 +42,13 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
   struct damper_data data;
   zbus_chan_read(&damper_data_chan, &data, PUB_TIMEOUT);
 
+  const char *mode_str =
+      data.mode == DAMPER_MODE_AUTO ? "AUTO" :
+      data.mode == DAMPER_MODE_HEATING ? "HEATING" :
+      data.mode == DAMPER_MODE_COOLING ? "COOLING" : "MANUAL";
+
   shell_print(sh, "Damper Status:");
-  shell_print(sh, "  Mode:          %s",
-              data.mode == DAMPER_MODE_AUTO ? "AUTO" : "MANUAL");
+  shell_print(sh, "  Mode:          %s", mode_str);
   shell_print(sh, "  Route:         %s",
               data.route == DAMPER_ROUTE_INSIDE ? "INSIDE" : "OUTSIDE");
   shell_print(sh, "  Angle:         %.1f deg", data.angle);
@@ -52,6 +56,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
   shell_print(sh, "  Inside angle:  %.1f deg", dcfg->inside_angle);
   shell_print(sh, "  Outside angle: %.1f deg", dcfg->outside_angle);
   shell_print(sh, "  Core threshold:%.1f C", dcfg->core_threshold);
+  shell_print(sh, "  Cool setpoint: %.1f C", dcfg->cool_setpoint);
+  shell_print(sh, "  Cool hyst:     %.1f C", dcfg->cool_hysteresis);
   shell_print(sh, "  Heater:        %s",
               dcfg->heater_name[0] ? dcfg->heater_name : "(none)");
   shell_print(sh, "Servo Config:");
@@ -66,14 +72,31 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 // damper auto
 //////////////////////////////////////////////////////////////
 
-static int cmd_auto(const struct shell *sh, size_t argc, char **argv)
+static int cmd_mode(const struct shell *sh, size_t argc, char **argv)
 {
-  ARG_UNUSED(argc);
-  ARG_UNUSED(argv);
+  if (argc != 2) {
+    shell_error(sh, "Usage: damper mode <auto|manual|heating|cooling>");
+    return -EINVAL;
+  }
 
-  struct damper_command cmd = {.type = DAMPER_CMD_SET_AUTO};
+  struct damper_command cmd = {.type = DAMPER_CMD_SET_MODE};
+
+  if (strcmp(argv[1], "auto") == 0) {
+    cmd.mode = DAMPER_MODE_AUTO;
+  } else if (strcmp(argv[1], "manual") == 0) {
+    cmd.mode = DAMPER_MODE_MANUAL;
+  } else if (strcmp(argv[1], "heating") == 0) {
+    cmd.mode = DAMPER_MODE_HEATING;
+  } else if (strcmp(argv[1], "cooling") == 0) {
+    cmd.mode = DAMPER_MODE_COOLING;
+  } else {
+    shell_error(sh, "Unknown mode: %s (use auto, manual, heating, cooling)",
+                argv[1]);
+    return -EINVAL;
+  }
+
   zbus_chan_pub(&damper_command_chan, &cmd, PUB_TIMEOUT);
-  shell_print(sh, "Mode: AUTO");
+  shell_print(sh, "Mode: %s", argv[1]);
   return 0;
 }
 
@@ -105,7 +128,7 @@ static int cmd_angle(const struct shell *sh, size_t argc, char **argv)
 static int cmd_config(const struct shell *sh, size_t argc, char **argv)
 {
   if (argc != 3) {
-    shell_error(sh, "Usage: damper config <inside|outside|threshold> <value>");
+    shell_error(sh, "Usage: damper config <inside|outside|threshold|cool_sp|cool_hy> <value>");
     return -EINVAL;
   }
 
@@ -117,6 +140,8 @@ static int cmd_config(const struct shell *sh, size_t argc, char **argv)
       .inside_angle = cfg->inside_angle,
       .outside_angle = cfg->outside_angle,
       .core_threshold = cfg->core_threshold,
+      .cool_setpoint = cfg->cool_setpoint,
+      .cool_hysteresis = cfg->cool_hysteresis,
   };
 
   if (strcmp(argv[1], "inside") == 0) {
@@ -125,8 +150,13 @@ static int cmd_config(const struct shell *sh, size_t argc, char **argv)
     cmd.outside_angle = val;
   } else if (strcmp(argv[1], "threshold") == 0) {
     cmd.core_threshold = val;
+  } else if (strcmp(argv[1], "cool_sp") == 0) {
+    cmd.cool_setpoint = val;
+  } else if (strcmp(argv[1], "cool_hy") == 0) {
+    cmd.cool_hysteresis = val;
   } else {
-    shell_error(sh, "Unknown param: %s (use inside, outside, threshold)", argv[1]);
+    shell_error(sh, "Unknown param: %s (use inside, outside, threshold, cool_sp, cool_hy)",
+                argv[1]);
     return -EINVAL;
   }
 
@@ -757,10 +787,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 SHELL_STATIC_SUBCMD_SET_CREATE(
     damper_cmds,
     SHELL_CMD(status, NULL, "Show damper status and config", cmd_status),
-    SHELL_CMD(auto, NULL, "Switch to auto mode", cmd_auto),
+    SHELL_CMD_ARG(mode, NULL, "Set mode: damper mode <auto|manual|heating|cooling>",
+                  cmd_mode, 2, 0),
     SHELL_CMD_ARG(angle, NULL, "Move to angle: damper angle <degrees>",
                   cmd_angle, 2, 0),
-    SHELL_CMD_ARG(config, NULL, "Set config: damper config <inside|outside|threshold> <value>",
+    SHELL_CMD_ARG(config, NULL, "Set config: damper config <inside|outside|threshold|cool_sp|cool_hy> <value>",
                   cmd_config, 3, 0),
     SHELL_CMD_ARG(heater, NULL, "Set heater ID: damper heater <name>",
                   cmd_heater, 1, 1),

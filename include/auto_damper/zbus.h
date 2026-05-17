@@ -6,11 +6,27 @@
 #include <auto_damper/heater.h>
 
 //////////////////////////////////////////////////////////////
+// Damper Types
+//////////////////////////////////////////////////////////////
+
+enum damper_mode {
+  DAMPER_MODE_AUTO,
+  DAMPER_MODE_MANUAL,
+  DAMPER_MODE_HEATING,
+  DAMPER_MODE_COOLING,
+};
+
+enum damper_route {
+  DAMPER_ROUTE_OUTSIDE,
+  DAMPER_ROUTE_INSIDE,
+};
+
+//////////////////////////////////////////////////////////////
 // Damper Command Channel
 //////////////////////////////////////////////////////////////
 
 enum damper_command_type {
-  DAMPER_CMD_SET_AUTO,
+  DAMPER_CMD_SET_MODE,
   DAMPER_CMD_SET_ANGLE,
   DAMPER_CMD_SET_CONFIG,
   DAMPER_CMD_SET_HEATER,
@@ -18,10 +34,13 @@ enum damper_command_type {
 
 struct damper_command {
   enum damper_command_type type;
+  enum damper_mode mode;
   double angle;
   double inside_angle;
   double outside_angle;
   double core_threshold;
+  double cool_setpoint;
+  double cool_hysteresis;
   char heater_name[32];
 };
 
@@ -31,16 +50,6 @@ ZBUS_CHAN_DECLARE(damper_command_chan);
 // Damper Data Channel
 //////////////////////////////////////////////////////////////
 
-enum damper_mode {
-  DAMPER_MODE_AUTO,
-  DAMPER_MODE_MANUAL,
-};
-
-enum damper_route {
-  DAMPER_ROUTE_OUTSIDE,
-  DAMPER_ROUTE_INSIDE,
-};
-
 struct damper_data {
   enum damper_mode mode;
   enum damper_route route;
@@ -48,6 +57,8 @@ struct damper_data {
   double inside_angle;
   double outside_angle;
   double core_threshold;
+  double cool_setpoint;
+  double cool_hysteresis;
   char heater_name[32];
   int64_t timestamp_us;
 };

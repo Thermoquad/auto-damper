@@ -2,12 +2,14 @@ import { createSignal, createEffect, onCleanup } from 'solid-js';
 
 export type DamperMsg = {
   type: 'damper';
-  mode: 'auto' | 'manual';
+  mode: 'auto' | 'manual' | 'heating' | 'cooling';
   route: 'inside' | 'outside';
   angle: number;
   inside_angle: number;
   outside_angle: number;
   core_threshold: number;
+  cool_setpoint: number;
+  cool_hysteresis: number;
   heater_name: string | null;
 };
 export type HeaterMsg = {
