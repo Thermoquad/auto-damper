@@ -219,89 +219,74 @@ export default function App() {
               </div>
             </void-tab-panel>
             <void-tab-panel tab="config" label="Config">
-              <div class="card-body config-body">
-                <div class="config-section">
-                  <span class="stat-label">Angles</span>
-                  <div class="detail-grid">
-                    <span class="detail-label">Inside</span>
-                    <div class="detail-value">
-                      <void-number-input
-                        controls="sides"
-                        min={0} max={270} step={0.5} precision={1}
-                        value={damper()?.inside_angle ?? 0}
-                        on:void-change={(e: CustomEvent<{value: number}>) =>
-                          saveConfig('inside_angle', e.detail.value)}
-                      />
-                      <span class="config-unit">°</span>
-                    </div>
-                    <span class="detail-label">Outside</span>
-                    <div class="detail-value">
-                      <void-number-input
-                        controls="sides"
-                        min={0} max={270} step={0.5} precision={1}
-                        value={damper()?.outside_angle ?? 270}
-                        on:void-change={(e: CustomEvent<{value: number}>) =>
-                          saveConfig('outside_angle', e.detail.value)}
-                      />
-                      <span class="config-unit">°</span>
-                    </div>
-                  </div>
+              <div class="damper-config">
+                <div class="control-group">
+                  <div class="stat-label">Inside Angle</div>
+                  <void-number-input
+                    controls="sides"
+                    size="lg"
+                    min={0} max={270} step={0.5} precision={1}
+                    value={damper()?.inside_angle ?? 0}
+                    on:void-change={(e: CustomEvent<{value: number}>) =>
+                      saveConfig('inside_angle', e.detail.value)}
+                  />
                 </div>
-                <div class="config-section">
-                  <span class="stat-label">Heating</span>
-                  <div class="detail-grid">
-                    <span class="detail-label">Core Threshold</span>
-                    <div class="detail-value">
-                      <void-number-input
-                        controls="sides"
-                        min={0} max={500} step={5} precision={0}
-                        value={damper()?.core_threshold ?? 150}
-                        on:void-change={(e: CustomEvent<{value: number}>) =>
-                          saveConfig('core_threshold', e.detail.value)}
-                      />
-                      <span class="config-unit">°C</span>
-                    </div>
-                    <span class="detail-label">Heater ID</span>
-                    <div class="detail-value">
-                      <Show when={knownDevices().length} fallback={
-                        <span class="config-empty">{damper()?.heater_name ?? 'none'}</span>
-                      }>
-                        <void-select
-                          size="sm"
-                          ref={configHeaterSelectRef}
-                          on:void-change={(e: CustomEvent<{value: string}>) =>
-                            setDamperHeater(e.detail.value)}
-                        />
-                      </Show>
-                    </div>
-                  </div>
+                <div class="control-group">
+                  <div class="stat-label">Outside Angle</div>
+                  <void-number-input
+                    controls="sides"
+                    size="lg"
+                    min={0} max={270} step={0.5} precision={1}
+                    value={damper()?.outside_angle ?? 270}
+                    on:void-change={(e: CustomEvent<{value: number}>) =>
+                      saveConfig('outside_angle', e.detail.value)}
+                  />
                 </div>
-                <div class="config-section">
-                  <span class="stat-label">Cooling</span>
-                  <div class="detail-grid">
-                    <span class="detail-label">Setpoint</span>
-                    <div class="detail-value">
-                      <void-number-input
-                        controls="sides"
-                        min={0} max={50} step={1} precision={0}
-                        value={damper()?.cool_setpoint ?? 25}
-                        on:void-change={(e: CustomEvent<{value: number}>) =>
-                          saveConfig('cool_setpoint', e.detail.value)}
-                      />
-                      <span class="config-unit">°C</span>
-                    </div>
-                    <span class="detail-label">Hysteresis</span>
-                    <div class="detail-value">
-                      <void-number-input
-                        controls="sides"
-                        min={0} max={20} step={1} precision={0}
-                        value={damper()?.cool_hysteresis ?? 4}
-                        on:void-change={(e: CustomEvent<{value: number}>) =>
-                          saveConfig('cool_hysteresis', e.detail.value)}
-                      />
-                      <span class="config-unit">°C</span>
-                    </div>
-                  </div>
+                <div class="control-group">
+                  <div class="stat-label">Core Threshold</div>
+                  <void-number-input
+                    controls="sides"
+                    size="lg"
+                    min={0} max={500} step={5} precision={0}
+                    value={damper()?.core_threshold ?? 150}
+                    on:void-change={(e: CustomEvent<{value: number}>) =>
+                      saveConfig('core_threshold', e.detail.value)}
+                  />
+                </div>
+                <div class="control-group">
+                  <div class="stat-label">Heater ID</div>
+                  <Show when={knownDevices().length} fallback={
+                    <span class="config-empty">{damper()?.heater_name ?? 'none'}</span>
+                  }>
+                    <void-select
+                      size="lg"
+                      ref={configHeaterSelectRef}
+                      on:void-change={(e: CustomEvent<{value: string}>) =>
+                        setDamperHeater(e.detail.value)}
+                    />
+                  </Show>
+                </div>
+                <div class="control-group">
+                  <div class="stat-label">Cool Setpoint</div>
+                  <void-number-input
+                    controls="sides"
+                    size="lg"
+                    min={0} max={50} step={1} precision={0}
+                    value={damper()?.cool_setpoint ?? 25}
+                    on:void-change={(e: CustomEvent<{value: number}>) =>
+                      saveConfig('cool_setpoint', e.detail.value)}
+                  />
+                </div>
+                <div class="control-group">
+                  <div class="stat-label">Cool Hysteresis</div>
+                  <void-number-input
+                    controls="sides"
+                    size="lg"
+                    min={0} max={20} step={1} precision={0}
+                    value={damper()?.cool_hysteresis ?? 4}
+                    on:void-change={(e: CustomEvent<{value: number}>) =>
+                      saveConfig('cool_hysteresis', e.detail.value)}
+                  />
                 </div>
               </div>
             </void-tab-panel>

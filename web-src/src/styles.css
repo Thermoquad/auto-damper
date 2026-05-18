@@ -171,31 +171,12 @@ body {
   align-self: flex-start;
 }
 
-/* Config tab layout */
-.config-body {
+/* Damper Config tab — same layout pattern as .heater-controls */
+.damper-config {
   display: flex;
   flex-direction: column;
-  gap: var(--void-space-5);
-}
-
-.config-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--void-space-3);
-}
-
-.config-unit {
-  font-size: var(--void-text-sm);
-  color: var(--void-color-text-muted);
-  white-space: nowrap;
-}
-
-/* Value cell hosting a form control + unit suffix on a single row */
-.detail-grid > .detail-value {
-  display: flex;
-  align-items: center;
-  gap: var(--void-space-2);
-  min-width: 0;
+  gap: var(--void-space-4);
+  padding: var(--void-space-4) var(--void-space-5);
 }
 
 .config-empty {
