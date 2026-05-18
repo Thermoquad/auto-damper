@@ -46,6 +46,7 @@ struct heater_data {
   int startup_offset;
   int shutdown_offset;
   bool connected;
+  int8_t ble_rssi_dbm;
   char name[32];
   int64_t timestamp_us;
 };

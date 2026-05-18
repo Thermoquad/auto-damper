@@ -7,12 +7,28 @@
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/wifi.h>
 #include <zephyr/net/wifi_mgmt.h>
+#include <zephyr/zbus/zbus.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <string.h>
 #include <stdio.h>
 
 #include <auto_damper/wifi.h>
 #include <auto_damper/wifi_config.h>
+#include <auto_damper/zbus.h>
+
+#include <whd_wifi_api.h>
+#include <whd_types.h>
+extern whd_interface_t airoc_wifi_get_whd_interface(void);
+
+//////////////////////////////////////////////////////////////
+// Radio Status Channel — owned by wifi.c, also published from
+// heater_ble.c via zbus_chan_claim/finish for the ble_* fields.
+//////////////////////////////////////////////////////////////
+
+ZBUS_CHAN_DEFINE(radio_status_chan, struct radio_status, NULL, NULL,
+                ZBUS_OBSERVERS_EMPTY,
+                ZBUS_MSG_INIT(.wifi_connected = false, .wifi_rssi_dbm = 0,
+                              .wifi_powersave_mode = 0));
 
 LOG_MODULE_REGISTER(wifi, LOG_LEVEL_INF);
 
@@ -178,6 +194,22 @@ static void wifi_thread(void *p1, void *p2, void *p3)
         wifi_connect_internal();
       }
     }
+
+    /* Publish current wifi link state. */
+    int32_t rssi = 0;
+    uint32_t pm = 0;
+    whd_interface_t ifp = airoc_wifi_get_whd_interface();
+    if (ifp && wifi_state.connected) {
+      whd_wifi_get_rssi(ifp, &rssi);
+      whd_wifi_get_powersave_mode(ifp, &pm);
+    }
+    struct radio_status rs = {
+        .wifi_connected = wifi_state.connected,
+        .wifi_rssi_dbm = (int8_t)rssi,
+        .wifi_powersave_mode = (uint8_t)pm,
+    };
+    zbus_chan_pub(&radio_status_chan, &rs, K_MSEC(50));
+
     k_sleep(K_MSEC(WIFI_LOOP_SLEEP_MS));
   }
 }

@@ -131,4 +131,20 @@ ZBUS_CHAN_DECLARE(heater_devices_chan);
 
 ZBUS_CHAN_DECLARE(heater_data_chan);
 
+//////////////////////////////////////////////////////////////
+// Radio Status Channel — WiFi link state only.
+//
+// BLE link state is per-heater and rides in heater_data (which
+// scales when we add multi-heater support). WiFi is single-link,
+// hence its own channel.
+//////////////////////////////////////////////////////////////
+
+struct radio_status {
+  bool    wifi_connected;
+  int8_t  wifi_rssi_dbm;
+  uint8_t wifi_powersave_mode;  /* 0=off, 1=PM1, 2=PM2 */
+};
+
+ZBUS_CHAN_DECLARE(radio_status_chan);
+
 #endif

@@ -3,7 +3,11 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/hci_types.h>
 #include <zephyr/bluetooth/uuid.h>
+#include <zephyr/net_buf.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/zbus/zbus.h>
@@ -76,10 +80,13 @@ int heater_ble_scan(int timeout_sec);
 int heater_ble_connect(int index);
 
 static void offset_query_handler(struct k_work *work);
+static void radio_publish_handler(struct k_work *work);
 
 static K_WORK_DELAYABLE_DEFINE(heartbeat_work, heartbeat_handler);
 static K_WORK_DELAYABLE_DEFINE(reconnect_work, reconnect_handler);
 static K_WORK_DELAYABLE_DEFINE(offset_query_work, offset_query_handler);
+static K_WORK_DELAYABLE_DEFINE(radio_publish_work, radio_publish_handler);
+#define RADIO_PUBLISH_INTERVAL_MS 2000
 
 #define RECONNECT_DELAY_MS 3000
 
@@ -558,6 +565,11 @@ int heater_ble_init(void)
 
   bt_ready = true;
   LOG_INF("Bluetooth initialized");
+
+  /* Kick off periodic RSSI sampling. The handler reschedules itself
+   * so it keeps running for the lifetime of the system. */
+  k_work_reschedule(&radio_publish_work, K_MSEC(RADIO_PUBLISH_INTERVAL_MS));
+
   return 0;
 }
 
@@ -705,6 +717,40 @@ const char *heater_ble_get_connected_name(void)
     return NULL;
   }
   return scan_results[idx].name;
+}
+
+/* Sample the heater connection's RSSI via HCI_Read_RSSI and publish
+ * heater_data with the updated value. Since BLE link RSSI is a
+ * per-heater attribute, it travels in heater_data alongside the
+ * other heater telemetry — multi-heater support will naturally
+ * extend this channel rather than a shared radio struct. */
+static void radio_publish_handler(struct k_work *work)
+{
+  ARG_UNUSED(work);
+
+  if (heater_conn) {
+    uint16_t handle;
+    if (bt_hci_get_conn_handle(heater_conn, &handle) == 0) {
+      struct net_buf *buf = bt_hci_cmd_alloc(K_FOREVER);
+      if (buf) {
+        struct bt_hci_cp_read_rssi *cp = net_buf_add(buf, sizeof(*cp));
+        cp->handle = sys_cpu_to_le16(handle);
+        struct net_buf *rsp = NULL;
+        if (bt_hci_cmd_send_sync(BT_HCI_OP_READ_RSSI, buf, &rsp) == 0 && rsp) {
+          struct bt_hci_rp_read_rssi *rp = (void *)rsp->data;
+          if (rp->status == 0) {
+            last_heater_data.ble_rssi_dbm = rp->rssi;
+            last_heater_data.timestamp_us =
+                k_ticks_to_us_ceil64(k_uptime_ticks());
+            zbus_chan_pub(&heater_data_chan, &last_heater_data, K_MSEC(50));
+          }
+          net_buf_unref(rsp);
+        }
+      }
+    }
+  }
+
+  k_work_reschedule(&radio_publish_work, K_MSEC(RADIO_PUBLISH_INTERVAL_MS));
 }
 
 int heater_ble_send_power(bool on)
