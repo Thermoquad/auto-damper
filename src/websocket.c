@@ -141,7 +141,7 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           "{\"type\":\"heater\","
           "\"name\":%s%s%s,"
           "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
-          "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
+          "\"core_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
           "\"power_level\":%d,\"error\":%d,"
           "\"altitude_mode\":%s,"
@@ -153,7 +153,7 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           heater_power_state_str(data.power),
           heater_run_step_str(data.step),
           heater_run_mode_str(data.mode),
-          data.exhaust_temp_c, data.ambient_temp_c,
+          data.core_temp_c, data.ambient_temp_c,
           data.voltage, data.target_temp,
           data.power_level, data.error_code,
           data.altitude_mode ? "true" : "false",
@@ -433,7 +433,7 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
         "{\"type\":\"heater\","
         "\"name\":%s%s%s,"
         "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
-        "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
+        "\"core_temp\":%.1f,\"ambient_temp\":%.1f,"
         "\"voltage\":%.1f,\"target_temp\":%d,"
         "\"power_level\":%d,\"error\":%d,\"connected\":%s}",
         data.name[0] ? "\"" : "",
@@ -442,7 +442,7 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
         heater_power_state_str(data.power),
         heater_run_step_str(data.step),
         heater_run_mode_str(data.mode),
-        data.exhaust_temp_c, data.ambient_temp_c,
+        data.core_temp_c, data.ambient_temp_c,
         data.voltage, data.target_temp,
         data.power_level, data.error_code,
         data.connected ? "true" : "false");

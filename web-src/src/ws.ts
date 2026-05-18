@@ -18,7 +18,7 @@ export type HeaterMsg = {
   power: string;
   step: string;
   mode: string;
-  exhaust_temp: number;
+  core_temp: number;
   ambient_temp: number;
   voltage: number;
   target_temp: number;

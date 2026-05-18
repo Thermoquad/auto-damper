@@ -97,7 +97,7 @@ static int cc_decode(const uint8_t *buf, size_t len, struct heater_data *data)
   }
   data->voltage = (double)buf[9];
   data->ambient_temp_c = (double)buf[11] - 30.0;
-  data->exhaust_temp_c = (double)((buf[12] << 8) | buf[13]);
+  data->core_temp_c = (double)((buf[12] << 8) | buf[13]);
   data->altitude_mode = (buf[15] == 0x01);
   data->connected = true;
 

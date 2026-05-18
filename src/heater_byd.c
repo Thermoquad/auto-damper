@@ -129,12 +129,12 @@ static int byd_decode(const uint8_t *buf, size_t len, struct heater_data *data)
 
   if (!v2) {
     data->voltage = (double)((tmp[12] << 8) | tmp[11]) / 10.0;
-    data->exhaust_temp_c = (double)(int16_t)((tmp[14] << 8) | tmp[13]);
+    data->core_temp_c = (double)(int16_t)((tmp[14] << 8) | tmp[13]);
     data->ambient_temp_c = (double)(int16_t)((tmp[16] << 8) | tmp[15]);
     data->error_code = (tmp[1] == 0x66) ? tmp[17] : tmp[4];
   } else if (len >= 36) {
     data->voltage = (double)((tmp[11] << 8) | tmp[12]) / 10.0;
-    data->exhaust_temp_c = (double)(int16_t)((tmp[13] << 8) | tmp[14]);
+    data->core_temp_c = (double)(int16_t)((tmp[13] << 8) | tmp[14]);
     data->ambient_temp_c = (double)(int16_t)((tmp[32] << 8) | tmp[33]) / 10.0;
     data->error_code = (tmp[1] == 0x66) ? tmp[35] : tmp[4];
   }

@@ -332,7 +332,7 @@ static int cmd_ble_status(const struct shell *sh, size_t argc, char **argv)
               heater_power_state_str(hdata.power));
   shell_print(sh, "  Step:         %s",
               heater_run_step_str(hdata.step));
-  shell_print(sh, "  Core:         %.1f C", hdata.exhaust_temp_c);
+  shell_print(sh, "  Core:         %.1f C", hdata.core_temp_c);
   shell_print(sh, "  Ambient:      %.1f C", hdata.ambient_temp_c);
   shell_print(sh, "  Voltage:      %.1f V", hdata.voltage);
   shell_print(sh, "  Mode:         %s",

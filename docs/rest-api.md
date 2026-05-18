@@ -259,7 +259,7 @@ Get connection status and telemetry for a heater.
     "power": "RUNNING",
     "step": "IDLE",
     "mode": "fan",
-    "exhaust_temp": 22.0,
+    "core_temp": 22.0,
     "ambient_temp": 24.0,
     "voltage": 12.0,
     "target_temp": 0,

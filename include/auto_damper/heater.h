@@ -36,7 +36,7 @@ struct heater_data {
   enum heater_power_state power;
   enum heater_run_step step;
   enum heater_run_mode mode;
-  double exhaust_temp_c;
+  double core_temp_c;
   double ambient_temp_c;
   double voltage;
   int error_code;

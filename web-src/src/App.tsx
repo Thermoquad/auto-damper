@@ -352,11 +352,11 @@ export default function App() {
                   <span> {selectedName()}</span>
                 </void-alert>
               }>
-                <void-collapsible heading="Status" open>
+                <void-collapsible heading="Status">
                   <div class="stat-grid">
                     <void-stat size="sm" label="System" value={heater()!.power} />
                     <void-stat size="sm" label="State" value={heater()!.step} />
-                    <void-stat size="sm" label="Core" value={`${heater()!.exhaust_temp.toFixed(1)}°C`} />
+                    <void-stat size="sm" label="Core" value={`${heater()!.core_temp.toFixed(1)}°C`} />
                     <void-stat size="sm" label="Ambient" value={`${heater()!.ambient_temp.toFixed(1)}°C`} />
                     <void-stat size="sm" label="Voltage" value={`${heater()!.voltage.toFixed(1)}V`} />
                   </div>

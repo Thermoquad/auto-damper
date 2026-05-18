@@ -204,7 +204,7 @@ static bool get_heater_state(struct heater_data *hdata)
 static void heating_run_logic(struct heater_data *hdata)
 {
   bool should_route_inside =
-      hdata->exhaust_temp_c > damper_cfg.core_threshold &&
+      hdata->core_temp_c > damper_cfg.core_threshold &&
       hdata->ambient_temp_c < (double)hdata->target_temp;
 
   if (should_route_inside) {

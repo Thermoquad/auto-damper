@@ -494,7 +494,7 @@ static int heater_item(const char *url, enum http_method method,
           "{\"name\":\"%s\",\"protocol\":\"%s\",\"connected\":true,"
           "\"telemetry\":{"
           "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
-          "\"exhaust_temp\":%.1f,\"ambient_temp\":%.1f,"
+          "\"core_temp\":%.1f,\"ambient_temp\":%.1f,"
           "\"voltage\":%.1f,\"target_temp\":%d,"
           "\"power_level\":%d,\"error\":%d,"
           "\"altitude_mode\":%s,"
@@ -503,7 +503,7 @@ static int heater_item(const char *url, enum http_method method,
           heater_power_state_str(hdata.power),
           heater_run_step_str(hdata.step),
           heater_run_mode_str(hdata.mode),
-          hdata.exhaust_temp_c, hdata.ambient_temp_c,
+          hdata.core_temp_c, hdata.ambient_temp_c,
           hdata.voltage, hdata.target_temp,
           hdata.power_level, hdata.error_code,
           hdata.altitude_mode ? "true" : "false",
