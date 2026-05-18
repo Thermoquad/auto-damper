@@ -9,6 +9,19 @@ export default function App() {
   const [damperTab, setDamperTab] = createSignal<'control' | 'config'>('control');
   const [selectedName, setSelectedName] = createSignal('');
   const [knownDevices, setKnownDevices] = createSignal<HeaterDevice[]>([]);
+  /** Manual-mode position limiter: when on, clamp angle to the
+   *  [inside_angle, outside_angle] window. Browser-local state. */
+  const [limitToRoute, setLimitToRoute] = createSignal(true);
+  const manualMin = () => {
+    if (!limitToRoute()) return 0;
+    const d = damper();
+    return d ? Math.min(d.inside_angle, d.outside_angle) : 0;
+  };
+  const manualMax = () => {
+    if (!limitToRoute()) return 270;
+    const d = damper();
+    return d ? Math.max(d.inside_angle, d.outside_angle) : 270;
+  };
   let configHeaterSelectRef: HTMLElement | undefined;
 
   /** void-select captures children once on connect, then moves them into
@@ -182,7 +195,7 @@ export default function App() {
               <div class="card-actions damper-angle-controls">
                 <void-slider
                   size="lg"
-                  min={0} max={270} step={0.5}
+                  min={manualMin()} max={manualMax()} step={0.5}
                   disabled={!isManual() || undefined}
                   value={localAngle()}
                   on:void-input={(e: CustomEvent<{value: number}>) => {
@@ -199,7 +212,7 @@ export default function App() {
                 <void-number-input
                   controls="sides"
                   size="lg"
-                  min={0} max={270} step={0.5} precision={1}
+                  min={manualMin()} max={manualMax()} step={0.5} precision={1}
                   disabled={!isManual() || undefined}
                   value={localAngle()}
                   on:void-change={(e: CustomEvent<{value: number}>) =>
@@ -216,6 +229,17 @@ export default function App() {
                   <void-toggle value="cooling">Cooling</void-toggle>
                   <void-toggle value="manual">Manual</void-toggle>
                 </void-toggle-group>
+                <Show when={isManual()}>
+                  <label class="limit-switch">
+                    <void-switch
+                      size="xxl"
+                      checked={limitToRoute() || undefined}
+                      on:void-change={(e: CustomEvent<{checked: boolean}>) =>
+                        setLimitToRoute(e.detail.checked)}
+                    />
+                    <span>Limit to route range</span>
+                  </label>
+                </Show>
               </div>
             </void-tab-panel>
             <void-tab-panel tab="config" label="Config">

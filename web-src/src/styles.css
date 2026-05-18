@@ -167,8 +167,18 @@ body {
 }
 
 .damper-angle-controls > void-number-input,
-.damper-angle-controls > void-toggle-group {
+.damper-angle-controls > void-toggle-group,
+.damper-angle-controls > .limit-switch {
   align-self: flex-start;
+}
+
+.limit-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--void-space-3);
+  font-size: var(--void-text-sm);
+  color: var(--void-color-text-secondary);
+  cursor: pointer;
 }
 
 /* Damper Config tab — same layout pattern as .heater-controls */
