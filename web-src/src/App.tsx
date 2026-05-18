@@ -170,6 +170,7 @@ export default function App() {
           </div>
           <void-tabs
             value={damperTab()}
+            size="lg"
             on:void-change={(e: CustomEvent<{value: string}>) => {
               /* void-change bubbles from every nested void-* component
                  (slider, toggle-group, number-input, select). Only act on
@@ -185,6 +186,7 @@ export default function App() {
               </div>
               <div class="card-actions damper-angle-controls">
                 <void-slider
+                  size="lg"
                   min={0} max={270} step={0.5}
                   disabled={!isManual() || undefined}
                   value={localAngle()}
@@ -201,6 +203,7 @@ export default function App() {
                 />
                 <void-number-input
                   controls="sides"
+                  size="lg"
                   min={0} max={270} step={0.5} precision={1}
                   disabled={!isManual() || undefined}
                   value={localAngle()}
@@ -209,7 +212,7 @@ export default function App() {
                 />
                 <void-toggle-group
                   value={damper()?.mode ?? 'auto'}
-                  size="sm"
+                  size="lg"
                   on:void-change={(e: CustomEvent<{value: string}>) => {
                     if (e.detail.value) setDamperMode(e.detail.value);
                   }}>
@@ -355,10 +358,10 @@ export default function App() {
                 <div class="stat-label">Power</div>
                 <div class="control-row">
                   <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
-                    size="sm" color="success"
+                    size="lg" color="success"
                     onClick={() => setPower(true)}>On</void-button>
                   <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
-                    size="sm" color="error"
+                    size="lg" color="error"
                     onClick={() => setPower(false)}>Off</void-button>
                 </div>
               </div>
@@ -366,7 +369,7 @@ export default function App() {
                 <div class="stat-label">Mode</div>
                 <void-toggle-group
                   value={heater()!.mode}
-                  size="sm"
+                  size="lg"
                   on:void-change={(e: CustomEvent<{value: string}>) => {
                     if (e.detail.value) setMode(e.detail.value);
                   }}>
@@ -381,7 +384,7 @@ export default function App() {
                 </div>
                 <void-number-input
                   controls="sides"
-                  size="sm"
+                  size="lg"
                   min={heater()!.mode === 'automatic' ? 8 : 1}
                   max={heater()!.mode === 'automatic' ? 36 : 10}
                   step={1} precision={0}
@@ -419,7 +422,7 @@ export default function App() {
                   <div class="stat-label">Altitude</div>
                   <void-button
                     variant={heater()!.altitude_mode ? 'filled' : 'outline'}
-                    size="sm"
+                    size="lg"
                     color={heater()!.altitude_mode ? 'warning' : 'default'}
                     onClick={toggleAltitude}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
