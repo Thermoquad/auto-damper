@@ -44,14 +44,48 @@ export function createWs() {
 
   let ws: WebSocket | null = null;
   let reconnectTimer: number | undefined;
+  /* Heartbeat: TCP doesn't notice a peer reboot for many seconds, so
+   * onclose alone is a slow liveness signal. Send a cheap status query
+   * every PING_MS and track time-since-last-message; if it crosses
+   * WATCHDOG_MS, treat the socket as dead and force-reconnect. */
+  const PING_MS = 3000;
+  const WATCHDOG_MS = 7000;
+  let pingTimer: number | undefined;
+  let watchdogTimer: number | undefined;
+  let lastMessageAt = 0;
+
+  function clearHeartbeat() {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = undefined; }
+    if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = undefined; }
+  }
+
+  function startHeartbeat() {
+    lastMessageAt = Date.now();
+    pingTimer = window.setInterval(() => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'damper.status' }));
+      }
+    }, PING_MS);
+    watchdogTimer = window.setInterval(() => {
+      if (Date.now() - lastMessageAt > WATCHDOG_MS) {
+        clearHeartbeat();
+        setConnected(false);
+        ws?.close();
+      }
+    }, 1000);
+  }
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/api/ws`);
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+      startHeartbeat();
+    };
 
     ws.onmessage = (e) => {
+      lastMessageAt = Date.now();
       const msg: WsMessage = JSON.parse(e.data);
       switch (msg.type) {
         case 'damper':
@@ -70,6 +104,7 @@ export function createWs() {
     };
 
     ws.onclose = () => {
+      clearHeartbeat();
       setConnected(false);
       reconnectTimer = window.setTimeout(connect, 2000);
     };
@@ -86,6 +121,7 @@ export function createWs() {
   connect();
 
   onCleanup(() => {
+    clearHeartbeat();
     clearTimeout(reconnectTimer);
     ws?.close();
   });
