@@ -435,7 +435,7 @@ export default function App() {
                   <void-button
                     variant={heater()!.altitude_mode ? 'filled' : 'outline'}
                     size="lg"
-                    color={heater()!.altitude_mode ? 'warning' : 'default'}
+                    color={heater()!.altitude_mode ? 'caution' : 'default'}
                     onClick={toggleAltitude}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
