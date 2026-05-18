@@ -81,6 +81,11 @@ export default function App() {
     }
   });
 
+  /* Rate-limit servo commands to 10/sec (100 ms) so the firmware's
+   * WebSocket / TCP layer isn't flooded while the user is sliding. The
+   * first move is sent immediately; subsequent calls within the window
+   * collapse to the most recent value and ship on the next tick. */
+  const SERVO_CMD_INTERVAL_MS = 100;
   let angleTimer: number | undefined;
   let pendingAngle: number | undefined;
   const setAngle = (angle: number) => {
@@ -94,7 +99,7 @@ export default function App() {
           clearInterval(angleTimer);
           angleTimer = undefined;
         }
-      }, 50);
+      }, SERVO_CMD_INTERVAL_MS);
       send({ type: 'damper.set', angle });
       pendingAngle = undefined;
     }
