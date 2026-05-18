@@ -135,6 +135,32 @@ body {
   font-family: var(--void-font-sans);
 }
 
+/* Voidable ships a chevron on void-select but forgot it on
+ * void-combobox. Mirror the select chevron rule so the combobox
+ * trigger has the same dropdown affordance. */
+void-combobox {
+  position: relative;
+}
+void-combobox::after {
+  content: '';
+  position: absolute;
+  right: var(--void-space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0.75rem;
+  height: 0.75rem;
+  background-color: var(--void-color-text-secondary);
+  opacity: 0.6;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  pointer-events: none;
+}
+void-combobox .void-combobox-input {
+  padding-right: var(--void-space-8);
+}
+
 /* Heater controls — unified container for every labelled control group
  * (Power, Mode, Power Level, Min/Max Temp, Altitude). One layout, one
  * spacing rule. */
