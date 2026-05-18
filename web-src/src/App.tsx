@@ -165,8 +165,13 @@ export default function App() {
           </div>
           <void-tabs
             value={damperTab()}
-            on:void-change={(e: CustomEvent<{value: string}>) =>
-              setDamperTab(e.detail.value as 'control' | 'config')}>
+            on:void-change={(e: CustomEvent<{value: string}>) => {
+              /* void-change bubbles from every nested void-* component
+                 (slider, toggle-group, number-input, select). Only act on
+                 our own dispatch. */
+              if ((e.target as HTMLElement).tagName !== 'VOID-TABS') return;
+              setDamperTab(e.detail.value as 'control' | 'config');
+            }}>
             <void-tab-panel tab="control" label="Control">
               <div class="card-body">
                 <Show when={damper()} fallback={<div class="stat-value">--</div>}>
