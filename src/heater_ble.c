@@ -713,6 +713,19 @@ int heater_ble_send_power(bool on)
     return -ENOTCONN;
   }
 
+  /* The CC protocol's "power" command (0xA1) is a TOGGLE — it ignores
+   * the requested direction and just flips state. Sending it when the
+   * heater is already in the requested state would turn it on/off
+   * incorrectly. Guard here using the most recent telemetry: treat
+   * RUNNING and STARTING as "on", OFF and SHUTTING_DOWN as "off".
+   * Placing the guard in the zbus-driven send path means every caller
+   * (WS / HTTP API / shell) gets the protection for free. */
+  bool is_on = last_heater_data.power == HEATER_POWER_RUNNING ||
+               last_heater_data.power == HEATER_POWER_STARTING;
+  if (on == is_on) {
+    return 0;
+  }
+
   uint8_t buf[16];
   int pkt_len;
 
