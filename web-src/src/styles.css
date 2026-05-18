@@ -1,3 +1,8 @@
+/*
+ * Page layout and structural CSS only. Component appearance is owned by
+ * @voidable/theme — never override void-* elements with classes.
+ */
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -59,7 +64,7 @@ body {
   padding: var(--void-space-5);
 }
 
-/* Cards */
+/* Cards (custom layout container — interior content is Voidable components) */
 .card {
   border: 1px solid var(--void-color-border);
   border-radius: var(--void-radius-lg);
@@ -93,7 +98,13 @@ body {
   border-top: 1px solid var(--void-color-border);
 }
 
-/* Stats */
+.card-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-2);
+}
+
+/* Hero number (damper angle big display) */
 .stat-value {
   font-size: clamp(2rem, 8vw, 3rem);
   font-weight: var(--void-weight-bold);
@@ -102,37 +113,19 @@ body {
   line-height: var(--void-leading-none);
 }
 
+/* Inline label for control groups (Power, Min Temp, Altitude, etc.) */
 .stat-label {
   font-size: var(--void-text-xs);
   color: var(--void-color-text-muted);
   text-transform: uppercase;
   letter-spacing: var(--void-tracking-wider);
-  margin-top: var(--void-space-1);
 }
 
+/* Two-column grid for the heater telemetry void-stat group */
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: var(--void-space-4);
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--void-space-1);
-}
-
-.stat-sm {
-  font-size: var(--void-text-lg);
-  font-weight: var(--void-weight-semibold);
-  font-family: var(--void-font-mono);
-}
-
-/* Card Header Right */
-.card-header-right {
-  display: flex;
-  align-items: center;
-  gap: var(--void-space-2);
 }
 
 .heater-placeholder {
@@ -142,46 +135,21 @@ body {
   font-family: var(--void-font-sans);
 }
 
-/* Heater Disconnected */
-.heater-disconnected {
-  display: flex;
-  align-items: center;
-  gap: var(--void-space-3);
-  padding: var(--void-space-3) var(--void-space-4);
-  border-radius: var(--void-radius-md);
-  border: 1px solid var(--void-color-text-muted);
-  background: color-mix(in srgb, var(--void-color-text-muted) 10%, transparent);
-  font-size: var(--void-text-sm);
-  font-weight: var(--void-weight-semibold);
-}
-
-/* Heater Error */
-.heater-error {
-  display: flex;
-  align-items: center;
-  gap: var(--void-space-3);
-  padding: var(--void-space-3) var(--void-space-4);
-  margin-bottom: var(--void-space-4);
-  border: 1px solid var(--void-color-error, #ef4444);
-  border-radius: var(--void-radius-md);
-  background: color-mix(in srgb, var(--void-color-error, #ef4444) 10%, transparent);
-  font-size: var(--void-text-sm);
-  font-weight: var(--void-weight-semibold);
-}
-
-/* Heater Controls */
-.heater-controls-bar {
+/* Heater controls — unified container for every labelled control group
+ * (Power, Mode, Power Level, Min/Max Temp, Altitude). One layout, one
+ * spacing rule. */
+.heater-controls {
   display: flex;
   flex-direction: column;
   gap: var(--void-space-4);
-  margin-top: var(--void-space-5);
-  padding-top: var(--void-space-4);
+  padding: var(--void-space-4) var(--void-space-5);
   border-top: 1px solid var(--void-color-border);
 }
 
 .control-group {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: var(--void-space-2);
 }
 
@@ -191,55 +159,19 @@ body {
   gap: var(--void-space-2);
 }
 
-.temp-display {
-  font-family: var(--void-font-mono);
-  font-weight: var(--void-weight-semibold);
-  font-size: var(--void-text-lg);
-  min-width: 4ch;
-  text-align: center;
-}
-
-/* Damper Angle Controls */
+/* Damper Angle Controls — slider stretches full-width, other controls centered */
 .damper-angle-controls {
   flex-direction: column;
+  align-items: stretch;
   gap: var(--void-space-3);
 }
 
-.angle-slider-row {
-  display: flex;
-  align-items: center;
-  gap: var(--void-space-3);
-  width: 100%;
+.damper-angle-controls > void-number-input,
+.damper-angle-controls > void-toggle-group {
+  align-self: flex-start;
 }
 
-.angle-slider {
-  flex: 1;
-  height: 6px;
-  accent-color: var(--void-color-info, #3b82f6);
-}
-
-.angle-slider:disabled {
-  opacity: 0.4;
-  pointer-events: none;
-}
-
-.angle-input:disabled {
-  opacity: 0.4;
-}
-
-.angle-input {
-  width: 5.5rem;
-  padding: var(--void-space-2) var(--void-space-3);
-  border: 1px solid var(--void-color-border);
-  border-radius: var(--void-radius-md);
-  background: var(--void-color-bg);
-  color: var(--void-color-text);
-  font-family: var(--void-font-mono);
-  font-size: var(--void-text-sm);
-  text-align: right;
-}
-
-/* Config Section */
+/* Config tab layout */
 .config-body {
   display: flex;
   flex-direction: column;
@@ -252,55 +184,18 @@ body {
   gap: var(--void-space-3);
 }
 
-.config-section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.config-row {
-  display: flex;
-  align-items: center;
-  gap: var(--void-space-2);
-}
-
-.config-label-input {
-  flex: 1;
-  min-width: 0;
-  padding: var(--void-space-2) var(--void-space-3);
-  border: 1px solid var(--void-color-border);
-  border-radius: var(--void-radius-md);
-  background: var(--void-color-bg);
-  color: var(--void-color-text);
-  font-size: var(--void-text-sm);
-}
-
-.config-angle-input,
-.config-temp-input {
-  width: 4.5rem;
-  padding: var(--void-space-2) var(--void-space-3);
-  border: 1px solid var(--void-color-border);
-  border-radius: var(--void-radius-md);
-  background: var(--void-color-bg);
-  color: var(--void-color-text);
-  font-family: var(--void-font-mono);
-  font-size: var(--void-text-sm);
-  text-align: right;
-}
-
 .config-unit {
   font-size: var(--void-text-sm);
   color: var(--void-color-text-muted);
   white-space: nowrap;
 }
 
-.config-pos-select {
-  padding: var(--void-space-2) var(--void-space-3);
-  border: 1px solid var(--void-color-border);
-  border-radius: var(--void-radius-md);
-  background: var(--void-color-bg);
-  color: var(--void-color-text);
-  font-size: var(--void-text-sm);
+/* Value cell hosting a form control + unit suffix on a single row */
+.detail-grid > .detail-value {
+  display: flex;
+  align-items: center;
+  gap: var(--void-space-2);
+  min-width: 0;
 }
 
 .config-empty {
@@ -309,54 +204,10 @@ body {
   font-style: italic;
 }
 
-.config-error {
-  font-size: var(--void-text-sm);
-  color: var(--void-color-error);
-  padding: 0.25rem 0.5rem;
-  background: color-mix(in srgb, var(--void-color-error) 10%, transparent);
-  border-radius: var(--void-radius-sm);
-}
-
-/* Tabs */
-.card-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--void-color-border);
-}
-
-.tab {
-  flex: 1;
-  padding: var(--void-space-3) var(--void-space-4);
-  font-size: var(--void-text-sm);
-  font-weight: var(--void-weight-medium);
-  color: var(--void-color-text-muted);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.tab:hover {
-  color: var(--void-color-text);
-}
-
-.tab.active {
-  color: var(--void-color-text);
-  border-bottom-color: var(--void-color-text);
-}
-
-/* Mode Toggle */
-.mode-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: var(--void-space-3);
-}
-
-/* Heater Mode Controls (tab content) */
+/* Heater mode controls — sits below card-body, separated by the card's natural border */
 .heater-mode-controls {
   display: flex;
   flex-direction: column;
   gap: var(--void-space-4);
-  padding: var(--void-space-4) var(--void-space-5);
+  padding: 0 var(--void-space-5) var(--void-space-5);
 }
-

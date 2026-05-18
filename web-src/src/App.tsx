@@ -10,6 +10,24 @@ export default function App() {
   const [selectedName, setSelectedName] = createSignal('');
   const [knownDevices, setKnownDevices] = createSignal<HeaterDevice[]>([]);
   let heaterSelectRef: HTMLElement | undefined;
+  let configHeaterSelectRef: HTMLElement | undefined;
+
+  const syncVoidSelect = (el: HTMLElement, options: Array<{value: string; label: string}>, selected: string) => {
+    const sync = () => {
+      const inner = el.querySelector('select') as HTMLSelectElement | null;
+      if (!inner) return;
+      inner.replaceChildren(...options.map(o => {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        return opt;
+      }));
+      inner.value = selected;
+    };
+    const updateComplete = (el as any).updateComplete;
+    if (updateComplete) updateComplete.then(sync);
+    else queueMicrotask(sync);
+  };
 
   createEffect(() => {
     const hs = heaters();
@@ -38,23 +56,21 @@ export default function App() {
   });
 
   createEffect(() => {
-    const devices = knownDevices();
-    const selected = selectedName();
     if (!heaterSelectRef) return;
-    const el = heaterSelectRef as any;
-    const sync = () => {
-      const inner = el.querySelector('select') as HTMLSelectElement;
-      if (!inner) return;
-      inner.replaceChildren(...devices.map(d => {
-        const opt = document.createElement('option');
-        opt.value = d.name;
-        opt.textContent = `${d.name} (${d.protocol})`;
-        return opt;
-      }));
-      if (selected) inner.value = selected;
-    };
-    if (el.updateComplete) el.updateComplete.then(sync);
-    else queueMicrotask(sync);
+    syncVoidSelect(
+      heaterSelectRef,
+      knownDevices().map(d => ({value: d.name, label: `${d.name} (${d.protocol})`})),
+      selectedName(),
+    );
+  });
+
+  createEffect(() => {
+    if (!configHeaterSelectRef) return;
+    syncVoidSelect(
+      configHeaterSelectRef,
+      [{value: '', label: 'None'}, ...knownDevices().map(d => ({value: d.name, label: d.name}))],
+      damper()?.heater_name ?? '',
+    );
   });
 
   const heaterConnected = () => heater()?.connected && heater()!.name === selectedName();
@@ -108,14 +124,6 @@ export default function App() {
   const toggleAltitude = () => heaterCmd({ altitude: true });
   const setAutoOffsets = (startup: number, shutdown: number) =>
     heaterCmd({ startup_offset: startup, shutdown_offset: shutdown });
-  const adjustOffset = (field: 'startup' | 'shutdown', delta: number) => {
-    const h = heater()!;
-    const cur = field === 'startup' ? h.startup_offset : h.shutdown_offset;
-    const next = Math.max(3, Math.min(10, cur + delta));
-    if (field === 'startup') setAutoOffsets(next, h.shutdown_offset);
-    else setAutoOffsets(h.startup_offset, next);
-  };
-
   const saveConfig = (field: string, value: number) => {
     sendCmd({ type: 'damper.config', [field]: value });
   };
@@ -155,161 +163,152 @@ export default function App() {
               </div>
             </Show>
           </div>
-          <div class="card-tabs">
-            <button class={`tab ${damperTab() === 'control' ? 'active' : ''}`}
-              onClick={() => setDamperTab('control')}>Control</button>
-            <button class={`tab ${damperTab() === 'config' ? 'active' : ''}`}
-              onClick={() => setDamperTab('config')}>Config</button>
-          </div>
-          <Show when={damperTab() === 'control'}>
-            <div class="card-body">
-              <Show when={damper()} fallback={<div class="stat-value">--</div>}>
-                <div class="stat-value">{damper()!.angle.toFixed(1)}°</div>
-              </Show>
-            </div>
-            <div class="card-actions damper-angle-controls">
-              <div class="angle-slider-row">
-                <input
-                  type="range" min="0" max="270" step="0.5"
-                  class="angle-slider"
-                  disabled={!isManual()}
+          <void-tabs
+            value={damperTab()}
+            on:void-change={(e: CustomEvent<{value: string}>) =>
+              setDamperTab(e.detail.value as 'control' | 'config')}>
+            <void-tab-panel tab="control" label="Control">
+              <div class="card-body">
+                <Show when={damper()} fallback={<div class="stat-value">--</div>}>
+                  <div class="stat-value">{damper()!.angle.toFixed(1)}°</div>
+                </Show>
+              </div>
+              <div class="card-actions damper-angle-controls">
+                <void-slider
+                  min={0} max={270} step={0.5}
+                  disabled={!isManual() || undefined}
                   value={localAngle()}
-                  onPointerDown={() => setSliding(true)}
-                  onInput={(e) => {
-                    const v = parseFloat(e.currentTarget.value);
-                    setLocalAngle(v);
-                    setAngle(v);
+                  on:void-input={(e: CustomEvent<{value: number}>) => {
+                    setSliding(true);
+                    setLocalAngle(e.detail.value);
+                    setAngle(e.detail.value);
                   }}
-                  onChange={() => {
+                  on:void-change={(e: CustomEvent<{value: number}>) => {
                     setSliding(false);
+                    setLocalAngle(e.detail.value);
+                    setAngle(e.detail.value);
                   }}
                 />
-                <input
-                  type="number" min="0" max="270" step="0.5"
-                  class="angle-input"
-                  disabled={!isManual()}
-                  value={localAngle().toFixed(1)}
-                  onChange={(e) => {
-                    const v = parseFloat(e.currentTarget.value);
-                    if (!isNaN(v)) setAngle(Math.max(0, Math.min(270, v)));
-                  }}
+                <void-number-input
+                  controls="sides"
+                  min={0} max={270} step={0.5} precision={1}
+                  disabled={!isManual() || undefined}
+                  value={localAngle()}
+                  on:void-change={(e: CustomEvent<{value: number}>) =>
+                    setAngle(e.detail.value)}
                 />
+                <void-toggle-group
+                  value={damper()?.mode ?? 'auto'}
+                  size="sm"
+                  on:void-change={(e: CustomEvent<{value: string}>) => {
+                    if (e.detail.value) setDamperMode(e.detail.value);
+                  }}>
+                  <void-toggle value="auto">Auto</void-toggle>
+                  <void-toggle value="heating">Heating</void-toggle>
+                  <void-toggle value="cooling">Cooling</void-toggle>
+                  <void-toggle value="manual">Manual</void-toggle>
+                </void-toggle-group>
               </div>
-              <div class="mode-toggle-row">
-                {(['auto', 'heating', 'cooling', 'manual'] as const).map(m => (
-                  <void-button
-                    variant={damper()?.mode === m ? 'filled' : 'outline'}
-                    size="sm"
-                    color={damper()?.mode === m ? 'info' : 'default'}
-                    onClick={() => setDamperMode(m)}>
-                    {m[0].toUpperCase() + m.slice(1)}
-                  </void-button>
-                ))}
-              </div>
-            </div>
-          </Show>
-          <Show when={damperTab() === 'config'}>
-            <div class="card-body config-body">
-              <div class="config-section">
-                <span class="stat-label">Angles</span>
-                <div class="config-row">
-                  <span class="config-unit">Inside</span>
-                  <input
-                    type="number" class="config-angle-input"
-                    min="0" max="270" step="0.5"
-                    value={damper()?.inside_angle?.toFixed(1) ?? '0.0'}
-                    onChange={(e) => {
-                      const v = parseFloat(e.currentTarget.value);
-                      if (!isNaN(v)) saveConfig('inside_angle', Math.max(0, Math.min(270, v)));
-                    }}
-                  />
-                  <span class="config-unit">°</span>
+            </void-tab-panel>
+            <void-tab-panel tab="config" label="Config">
+              <div class="card-body config-body">
+                <div class="config-section">
+                  <span class="stat-label">Angles</span>
+                  <div class="detail-grid">
+                    <span class="detail-label">Inside</span>
+                    <div class="detail-value">
+                      <void-number-input
+                        controls="sides"
+                        min={0} max={270} step={0.5} precision={1}
+                        value={damper()?.inside_angle ?? 0}
+                        on:void-change={(e: CustomEvent<{value: number}>) =>
+                          saveConfig('inside_angle', e.detail.value)}
+                      />
+                      <span class="config-unit">°</span>
+                    </div>
+                    <span class="detail-label">Outside</span>
+                    <div class="detail-value">
+                      <void-number-input
+                        controls="sides"
+                        min={0} max={270} step={0.5} precision={1}
+                        value={damper()?.outside_angle ?? 270}
+                        on:void-change={(e: CustomEvent<{value: number}>) =>
+                          saveConfig('outside_angle', e.detail.value)}
+                      />
+                      <span class="config-unit">°</span>
+                    </div>
+                  </div>
                 </div>
-                <div class="config-row">
-                  <span class="config-unit">Outside</span>
-                  <input
-                    type="number" class="config-angle-input"
-                    min="0" max="270" step="0.5"
-                    value={damper()?.outside_angle?.toFixed(1) ?? '270.0'}
-                    onChange={(e) => {
-                      const v = parseFloat(e.currentTarget.value);
-                      if (!isNaN(v)) saveConfig('outside_angle', Math.max(0, Math.min(270, v)));
-                    }}
-                  />
-                  <span class="config-unit">°</span>
+                <div class="config-section">
+                  <span class="stat-label">Heating</span>
+                  <div class="detail-grid">
+                    <span class="detail-label">Core Threshold</span>
+                    <div class="detail-value">
+                      <void-number-input
+                        controls="sides"
+                        min={0} max={500} step={5} precision={0}
+                        value={damper()?.core_threshold ?? 150}
+                        on:void-change={(e: CustomEvent<{value: number}>) =>
+                          saveConfig('core_threshold', e.detail.value)}
+                      />
+                      <span class="config-unit">°C</span>
+                    </div>
+                    <span class="detail-label">Heater ID</span>
+                    <div class="detail-value">
+                      <Show when={knownDevices().length} fallback={
+                        <span class="config-empty">{damper()?.heater_name ?? 'none'}</span>
+                      }>
+                        <void-select
+                          size="sm"
+                          ref={configHeaterSelectRef}
+                          on:void-change={(e: CustomEvent<{value: string}>) =>
+                            setDamperHeater(e.detail.value)}
+                        />
+                      </Show>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div class="config-section">
-                <span class="stat-label">Heating</span>
-                <div class="config-row">
-                  <span class="config-unit">Core Threshold</span>
-                  <input
-                    type="number" class="config-temp-input"
-                    min="0" max="500" step="5"
-                    value={damper()?.core_threshold?.toFixed(0) ?? '150'}
-                    onChange={(e) => {
-                      const v = parseFloat(e.currentTarget.value);
-                      if (!isNaN(v)) saveConfig('core_threshold', v);
-                    }}
-                  />
-                  <span class="config-unit">°C</span>
-                </div>
-                <div class="config-row">
-                  <span class="config-unit">Heater ID</span>
-                  <Show when={knownDevices().length} fallback={
-                    <span class="config-empty">{damper()?.heater_name ?? 'none'}</span>
-                  }>
-                    <select class="config-pos-select"
-                      value={damper()?.heater_name ?? ''}
-                      onChange={(e) => setDamperHeater(e.currentTarget.value)}>
-                      <option value="">None</option>
-                      {knownDevices().map(d => (
-                        <option value={d.name}>{d.name}</option>
-                      ))}
-                    </select>
-                  </Show>
-                </div>
-              </div>
-              <div class="config-section">
-                <span class="stat-label">Cooling</span>
-                <div class="config-row">
-                  <span class="config-unit">Setpoint</span>
-                  <input
-                    type="number" class="config-temp-input"
-                    min="0" max="50" step="1"
-                    value={damper()?.cool_setpoint?.toFixed(0) ?? '25'}
-                    onChange={(e) => {
-                      const v = parseFloat(e.currentTarget.value);
-                      if (!isNaN(v)) saveConfig('cool_setpoint', v);
-                    }}
-                  />
-                  <span class="config-unit">°C</span>
-                </div>
-                <div class="config-row">
-                  <span class="config-unit">Hysteresis</span>
-                  <input
-                    type="number" class="config-temp-input"
-                    min="0" max="20" step="1"
-                    value={damper()?.cool_hysteresis?.toFixed(0) ?? '4'}
-                    onChange={(e) => {
-                      const v = parseFloat(e.currentTarget.value);
-                      if (!isNaN(v)) saveConfig('cool_hysteresis', v);
-                    }}
-                  />
-                  <span class="config-unit">°C</span>
+                <div class="config-section">
+                  <span class="stat-label">Cooling</span>
+                  <div class="detail-grid">
+                    <span class="detail-label">Setpoint</span>
+                    <div class="detail-value">
+                      <void-number-input
+                        controls="sides"
+                        min={0} max={50} step={1} precision={0}
+                        value={damper()?.cool_setpoint ?? 25}
+                        on:void-change={(e: CustomEvent<{value: number}>) =>
+                          saveConfig('cool_setpoint', e.detail.value)}
+                      />
+                      <span class="config-unit">°C</span>
+                    </div>
+                    <span class="detail-label">Hysteresis</span>
+                    <div class="detail-value">
+                      <void-number-input
+                        controls="sides"
+                        min={0} max={20} step={1} precision={0}
+                        value={damper()?.cool_hysteresis ?? 4}
+                        on:void-change={(e: CustomEvent<{value: number}>) =>
+                          saveConfig('cool_hysteresis', e.detail.value)}
+                      />
+                      <span class="config-unit">°C</span>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </Show>
+            </void-tab-panel>
+          </void-tabs>
         </section>
 
         <section class="card">
           <div class="card-header">
             <span class="card-title">Heater</span>
             <Show when={knownDevices().length}>
-              <void-select size="sm"
+              <void-select
+                size="sm"
                 ref={heaterSelectRef}
-                onChange={(e: Event) => setSelectedName((e.target as HTMLSelectElement).value)}
+                on:void-change={(e: CustomEvent<{value: string}>) =>
+                  setSelectedName(e.detail.value)}
               />
             </Show>
           </div>
@@ -320,136 +319,104 @@ export default function App() {
               </div>
             }>
               <Show when={heaterConnected() && heater()!.error}>
-                <div class="heater-error">
-                  <void-badge color="error">E{heater()!.error}</void-badge>
-                  <span>{heaterError(heater()!.error)}</span>
-                </div>
+                <void-alert color="error" variant="subtle">
+                  E{heater()!.error} — {heaterError(heater()!.error)}
+                </void-alert>
               </Show>
               <Show when={heaterConnected()} fallback={
-                <div class="heater-disconnected">
+                <void-alert color="default" variant="subtle">
                   <void-badge color="error">Disconnected</void-badge>
-                  <span>{selectedName()}</span>
-                </div>
+                  <span> {selectedName()}</span>
+                </void-alert>
               }>
                 <div class="stat-grid">
-                  <div class="stat-item">
-                    <div class="stat-label">System</div>
-                    <div class="stat-sm">{heater()!.power}</div>
-                  </div>
-                  <div class="stat-item">
-                    <div class="stat-label">State</div>
-                    <div class="stat-sm">{heater()!.step}</div>
-                  </div>
-                  <div class="stat-item">
-                    <div class="stat-label">Core</div>
-                    <div class="stat-sm">{heater()!.exhaust_temp.toFixed(1)}°C</div>
-                  </div>
-                  <div class="stat-item">
-                    <div class="stat-label">Ambient</div>
-                    <div class="stat-sm">{heater()!.ambient_temp.toFixed(1)}°C</div>
-                  </div>
-                  <div class="stat-item">
-                    <div class="stat-label">Voltage</div>
-                    <div class="stat-sm">{heater()!.voltage.toFixed(1)}V</div>
-                  </div>
-                </div>
-                <div class="heater-controls-bar">
-                  <div class="control-group">
-                    <div class="stat-label">Power</div>
-                    <div class="control-row">
-                      <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
-                        size="sm" color="success"
-                        onClick={() => setPower(true)}>
-                        On
-                      </void-button>
-                      <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
-                        size="sm" color="error"
-                        onClick={() => setPower(false)}>
-                        Off
-                      </void-button>
-                    </div>
-                  </div>
+                  <void-stat size="sm" label="System" value={heater()!.power} />
+                  <void-stat size="sm" label="State" value={heater()!.step} />
+                  <void-stat size="sm" label="Core" value={`${heater()!.exhaust_temp.toFixed(1)}°C`} />
+                  <void-stat size="sm" label="Ambient" value={`${heater()!.ambient_temp.toFixed(1)}°C`} />
+                  <void-stat size="sm" label="Voltage" value={`${heater()!.voltage.toFixed(1)}V`} />
                 </div>
               </Show>
             </Show>
           </div>
           <Show when={heaterConnected()}>
-            <div class="card-tabs">
-              <button class={`tab ${heater()!.mode === 'manual' ? 'active' : ''}`}
-                onClick={() => setMode('manual')}>Manual</button>
-              <button class={`tab ${heater()!.mode === 'automatic' ? 'active' : ''}`}
-                onClick={() => setMode('automatic')}>Auto</button>
-              <button class={`tab ${heater()!.mode === 'fan' ? 'active' : ''}`}
-                onClick={() => setMode('fan')}>Fan</button>
-            </div>
-            <div class="heater-mode-controls">
+            <div class="heater-controls">
+              <div class="control-group">
+                <div class="stat-label">Power</div>
+                <div class="control-row">
+                  <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
+                    size="sm" color="success"
+                    onClick={() => setPower(true)}>On</void-button>
+                  <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
+                    size="sm" color="error"
+                    onClick={() => setPower(false)}>Off</void-button>
+                </div>
+              </div>
+              <div class="control-group">
+                <div class="stat-label">Mode</div>
+                <void-toggle-group
+                  value={heater()!.mode}
+                  size="sm"
+                  on:void-change={(e: CustomEvent<{value: string}>) => {
+                    if (e.detail.value) setMode(e.detail.value);
+                  }}>
+                  <void-toggle value="manual">Manual</void-toggle>
+                  <void-toggle value="automatic">Auto</void-toggle>
+                  <void-toggle value="fan">Fan</void-toggle>
+                </void-toggle-group>
+              </div>
               <div class="control-group">
                 <div class="stat-label">
                   {heater()!.mode === 'automatic' ? 'Target Temp' : 'Power Level'}
                 </div>
-                <div class="control-row">
-                  <void-button variant="outline" size="sm"
-                    onClick={() => adjustPower(-1)}>
-                    −
-                  </void-button>
-                  <span class="temp-display">
-                    {heater()!.power_level}{heater()!.mode === 'automatic' ? '°C' : ''}
-                  </span>
-                  <void-button variant="outline" size="sm"
-                    onClick={() => adjustPower(1)}>
-                    +
-                  </void-button>
-                </div>
+                <void-number-input
+                  controls="sides"
+                  size="sm"
+                  min={heater()!.mode === 'automatic' ? 8 : 1}
+                  max={heater()!.mode === 'automatic' ? 36 : 10}
+                  step={1} precision={0}
+                  value={heater()!.power_level}
+                  on:void-change={(e: CustomEvent<{value: number; previous: number}>) =>
+                    adjustPower(e.detail.value - e.detail.previous)}
+                />
               </div>
               <Show when={heater()!.mode === 'automatic'}>
                 <div class="control-group">
                   <div class="stat-label">Min Temp</div>
-                  <div class="control-row">
-                    <void-button variant="outline" size="sm"
-                      onClick={() => adjustOffset('startup', -1)}>
-                      −
-                    </void-button>
-                    <span class="temp-display">
-                      {heater()!.startup_offset}°C
-                    </span>
-                    <void-button variant="outline" size="sm"
-                      onClick={() => adjustOffset('startup', 1)}>
-                      +
-                    </void-button>
-                  </div>
+                  <void-number-input
+                    controls="sides"
+                    size="sm"
+                    min={3} max={10} step={1} precision={0}
+                    value={heater()!.startup_offset}
+                    on:void-change={(e: CustomEvent<{value: number}>) =>
+                      setAutoOffsets(e.detail.value, heater()!.shutdown_offset)}
+                  />
                 </div>
                 <div class="control-group">
                   <div class="stat-label">Max Temp</div>
-                  <div class="control-row">
-                    <void-button variant="outline" size="sm"
-                      onClick={() => adjustOffset('shutdown', -1)}>
-                      −
-                    </void-button>
-                    <span class="temp-display">
-                      {heater()!.shutdown_offset}°C
-                    </span>
-                    <void-button variant="outline" size="sm"
-                      onClick={() => adjustOffset('shutdown', 1)}>
-                      +
-                    </void-button>
-                  </div>
+                  <void-number-input
+                    controls="sides"
+                    size="sm"
+                    min={3} max={10} step={1} precision={0}
+                    value={heater()!.shutdown_offset}
+                    on:void-change={(e: CustomEvent<{value: number}>) =>
+                      setAutoOffsets(heater()!.startup_offset, e.detail.value)}
+                  />
                 </div>
               </Show>
               <Show when={heater()!.mode !== 'fan'}>
                 <div class="control-group">
                   <div class="stat-label">Altitude</div>
-                  <div class="control-row">
-                    <void-button
-                      variant={heater()!.altitude_mode ? 'filled' : 'outline'}
-                      size="sm"
-                      color={heater()!.altitude_mode ? 'warning' : 'default'}
-                      onClick={toggleAltitude}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
-                        <path d="M7.5 11l2 2.5l2.5 -2.5l2 3l2.5 -2" />
-                      </svg>
-                    </void-button>
-                  </div>
+                  <void-button
+                    variant={heater()!.altitude_mode ? 'filled' : 'outline'}
+                    size="sm"
+                    color={heater()!.altitude_mode ? 'warning' : 'default'}
+                    onClick={toggleAltitude}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
+                      <path d="M7.5 11l2 2.5l2.5 -2.5l2 3l2.5 -2" />
+                    </svg>
+                  </void-button>
                 </div>
               </Show>
             </div>
