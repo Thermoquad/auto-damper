@@ -26,7 +26,7 @@ extern const struct http_service_desc damper_http_service;
 // Config
 //////////////////////////////////////////////////////////////
 
-#define WS_MAX_CLIENTS 2
+#define WS_MAX_CLIENTS 4
 #define WS_BUF_SIZE 512
 #define WS_RECV_BUF_SIZE 256
 #define WS_RECV_TIMEOUT_MS 100
