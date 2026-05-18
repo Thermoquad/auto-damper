@@ -32,8 +32,25 @@ export type HeaterMsg = {
 export type HeaterDevice = { name: string; rssi: number; protocol: string };
 export type HeatersMsg = { type: 'heaters'; connected: number; devices: HeaterDevice[] };
 export type ResultMsg = { type: 'result'; ok: boolean; error?: string };
+export type HeaterPendingMsg = {
+  type: 'heater.pending';
+  field: 'power' | 'mode' | 'altitude' | 'power_level' | 'auto_offsets';
+  value?: boolean | string;
+};
 
-export type WsMessage = DamperMsg | HeaterMsg | HeatersMsg | ResultMsg;
+export type WsMessage = DamperMsg | HeaterMsg | HeatersMsg | ResultMsg | HeaterPendingMsg;
+
+export type HeaterPending = {
+  field: HeaterPendingMsg['field'];
+  value?: boolean | string;
+  /* Snapshot of the relevant telemetry value at the moment the
+   * pending was armed. For commands that don't carry a target value
+   * (altitude is a toggle, power_level is a delta), we clear early
+   * when the next heater message shows a value different from this
+   * snapshot. */
+  before?: number | boolean | string;
+  beforeShutdown?: number;
+};
 
 export function createWs() {
   const [connected, setConnected] = createSignal(false);
@@ -41,6 +58,28 @@ export function createWs() {
   const [heater, setHeater] = createSignal<HeaterMsg | null>(null);
   const [heaters, setHeaters] = createSignal<HeatersMsg | null>(null);
   const [lastResult, setLastResult] = createSignal<ResultMsg | null>(null);
+  /* `pending` reflects a heater command that's been dispatched but
+   * whose effect hasn't yet shown up in telemetry. Set on incoming
+   * `heater.pending` (broadcast by firmware to every WS client),
+   * cleared either when matching telemetry arrives or after a 3s
+   * safety timeout. UI uses this to render a spinner on the button
+   * being waited on, in sync across all connected clients. */
+  const [pending, setPending] = createSignal<HeaterPending | null>(null);
+  const PENDING_TIMEOUT_MS = 3000;
+  let pendingTimeoutTimer: number | undefined;
+
+  const armPending = (p: HeaterPending) => {
+    if (pendingTimeoutTimer) clearTimeout(pendingTimeoutTimer);
+    setPending(p);
+    pendingTimeoutTimer = window.setTimeout(() => setPending(null), PENDING_TIMEOUT_MS);
+  };
+  const clearPending = () => {
+    if (pendingTimeoutTimer) {
+      clearTimeout(pendingTimeoutTimer);
+      pendingTimeoutTimer = undefined;
+    }
+    setPending(null);
+  };
 
   let ws: WebSocket | null = null;
   let reconnectTimer: number | undefined;
@@ -91,12 +130,45 @@ export function createWs() {
         case 'damper':
           setDamper(msg);
           break;
-        case 'heater':
+        case 'heater': {
           setHeater(msg);
+          /* Early-clear pending when telemetry confirms the change. */
+          const p = pending();
+          if (p) {
+            let done = false;
+            if (p.field === 'power') {
+              done = (p.value === true && msg.power === 'ON') ||
+                     (p.value === false && msg.power === 'OFF');
+            } else if (p.field === 'mode') {
+              done = msg.mode === p.value;
+            } else if (p.field === 'altitude') {
+              done = msg.altitude_mode !== p.before;
+            } else if (p.field === 'power_level') {
+              done = msg.power_level !== p.before;
+            } else if (p.field === 'auto_offsets') {
+              done = msg.startup_offset !== p.before ||
+                     msg.shutdown_offset !== p.beforeShutdown;
+            }
+            if (done) clearPending();
+          }
           break;
+        }
         case 'heaters':
           setHeaters(msg as HeatersMsg);
           break;
+        case 'heater.pending': {
+          const h = heater();
+          armPending({
+            field: msg.field,
+            value: msg.value,
+            before: msg.field === 'altitude' ? h?.altitude_mode :
+                    msg.field === 'power_level' ? h?.power_level :
+                    msg.field === 'auto_offsets' ? h?.startup_offset :
+                    undefined,
+            beforeShutdown: msg.field === 'auto_offsets' ? h?.shutdown_offset : undefined,
+          });
+          break;
+        }
         case 'result':
           setLastResult(msg);
           break;
@@ -131,5 +203,5 @@ export function createWs() {
     send(msg);
   }
 
-  return { connected, damper, heater, heaters, lastResult, send, sendCmd };
+  return { connected, damper, heater, heaters, lastResult, pending, send, sendCmd };
 }

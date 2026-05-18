@@ -511,6 +511,45 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       return;
     }
     zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
+
+    /* Re-broadcast a pending notification to all clients so every
+     * connected UI puts a spinner on the relevant button until the
+     * heater's next telemetry update reflects the new state. */
+    char pending_buf[128];
+    int plen = 0;
+    switch (cmd.type) {
+    case HEATER_CMD_POWER:
+      plen = snprintf(pending_buf, sizeof(pending_buf),
+          "{\"type\":\"heater.pending\",\"field\":\"power\",\"value\":%s}",
+          cmd.power_on ? "true" : "false");
+      break;
+    case HEATER_CMD_SET_MODE: {
+      const char *m = cmd.mode == HEATER_MODE_MANUAL ? "manual" :
+                      cmd.mode == HEATER_MODE_AUTOMATIC ? "automatic" :
+                      cmd.mode == HEATER_MODE_FAN ? "fan" : "";
+      plen = snprintf(pending_buf, sizeof(pending_buf),
+          "{\"type\":\"heater.pending\",\"field\":\"mode\",\"value\":\"%s\"}", m);
+      break;
+    }
+    case HEATER_CMD_ALTITUDE:
+      plen = snprintf(pending_buf, sizeof(pending_buf),
+          "{\"type\":\"heater.pending\",\"field\":\"altitude\"}");
+      break;
+    case HEATER_CMD_ADJUST_POWER:
+      plen = snprintf(pending_buf, sizeof(pending_buf),
+          "{\"type\":\"heater.pending\",\"field\":\"power_level\"}");
+      break;
+    case HEATER_CMD_SET_AUTO_OFFSETS:
+      plen = snprintf(pending_buf, sizeof(pending_buf),
+          "{\"type\":\"heater.pending\",\"field\":\"auto_offsets\"}");
+      break;
+    default:
+      break;
+    }
+    if (plen > 0) {
+      ws_broadcast(pending_buf, plen);
+    }
+
     ws_send_result(slot, true, NULL);
 
   } else {

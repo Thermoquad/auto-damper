@@ -3,7 +3,13 @@ import '@voidable/ui';
 import { createWs, type HeaterDevice } from './ws';
 
 export default function App() {
-  const { connected, damper, heater, heaters, lastResult, send, sendCmd } = createWs();
+  const { connected, damper, heater, heaters, lastResult, pending, send, sendCmd } = createWs();
+  const isPending = (field: string, value?: boolean | string) => {
+    const p = pending();
+    if (!p || p.field !== field) return false;
+    if (value === undefined) return true;
+    return p.value === value;
+  };
   const [sliding, setSliding] = createSignal(false);
   const [localAngle, setLocalAngle] = createSignal(0);
   const [damperTab, setDamperTab] = createSignal<'control' | 'config'>('control');
@@ -371,10 +377,18 @@ export default function App() {
                 <div class="control-row">
                   <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
                     size="lg" color="success"
-                    onClick={() => setPower(true)}>On</void-button>
+                    onClick={() => setPower(true)}>
+                    <Show when={isPending('power', true)} fallback="On">
+                      <void-spinner size="sm" /> On
+                    </Show>
+                  </void-button>
                   <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
                     size="lg" color="error"
-                    onClick={() => setPower(false)}>Off</void-button>
+                    onClick={() => setPower(false)}>
+                    <Show when={isPending('power', false)} fallback="Off">
+                      <void-spinner size="sm" /> Off
+                    </Show>
+                  </void-button>
                 </div>
               </div>
               <div class="control-group">
@@ -437,10 +451,14 @@ export default function App() {
                     size="lg"
                     color={heater()!.altitude_mode ? 'caution' : 'default'}
                     onClick={toggleAltitude}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
-                      <path d="M7.5 11l2 2.5l2.5 -2.5l2 3l2.5 -2" />
-                    </svg>
+                    <Show when={isPending('altitude')} fallback={
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 20h18l-6.921 -14.612a2.3 2.3 0 0 0 -4.158 0l-6.921 14.612z" />
+                        <path d="M7.5 11l2 2.5l2.5 -2.5l2 3l2.5 -2" />
+                      </svg>
+                    }>
+                      <void-spinner size="sm" />
+                    </Show>
                   </void-button>
                 </div>
               </Show>
