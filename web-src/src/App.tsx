@@ -1,4 +1,4 @@
-import { Show, createSignal, createEffect } from 'solid-js';
+import { Show, For, createSignal, createEffect } from 'solid-js';
 import '@voidable/ui';
 import { createWs, type HeaterDevice } from './ws';
 
@@ -9,9 +9,11 @@ export default function App() {
   const [damperTab, setDamperTab] = createSignal<'control' | 'config'>('control');
   const [selectedName, setSelectedName] = createSignal('');
   const [knownDevices, setKnownDevices] = createSignal<HeaterDevice[]>([]);
-  let heaterSelectRef: HTMLElement | undefined;
   let configHeaterSelectRef: HTMLElement | undefined;
 
+  /** void-select captures children once on connect, then moves them into
+   *  its rendered native <select>. We sync options via the inner element
+   *  so reactive changes propagate without remounting. */
   const syncVoidSelect = (el: HTMLElement, options: Array<{value: string; label: string}>, selected: string) => {
     const sync = () => {
       const inner = el.querySelector('select') as HTMLSelectElement | null;
@@ -56,20 +58,13 @@ export default function App() {
   });
 
   createEffect(() => {
-    if (!heaterSelectRef) return;
-    syncVoidSelect(
-      heaterSelectRef,
-      knownDevices().map(d => ({value: d.name, label: `${d.name} (${d.protocol})`})),
-      selectedName(),
-    );
-  });
-
-  createEffect(() => {
+    const devices = knownDevices();
+    const selected = damper()?.heater_name ?? '';
     if (!configHeaterSelectRef) return;
     syncVoidSelect(
       configHeaterSelectRef,
-      [{value: '', label: 'None'}, ...knownDevices().map(d => ({value: d.name, label: d.name}))],
-      damper()?.heater_name ?? '',
+      [{value: '', label: 'None'}, ...devices.map(d => ({value: d.name, label: d.name}))],
+      selected,
     );
   });
 
@@ -316,13 +311,19 @@ export default function App() {
         <section class="card">
           <div class="card-header">
             <span class="card-title">Heater</span>
-            <Show when={knownDevices().length}>
-              <void-select
-                size="sm"
-                ref={heaterSelectRef}
-                on:void-change={(e: CustomEvent<{value: string}>) =>
-                  setSelectedName(e.detail.value)}
-              />
+            <Show when={knownDevices().length ? knownDevices() : null} keyed>
+              {devices => (
+                <void-combobox
+                  size="lg"
+                  placeholder="Select heater"
+                  value={selectedName()}
+                  on:void-change={(e: CustomEvent<{value: string}>) =>
+                    setSelectedName(e.detail.value)}>
+                  <For each={devices}>
+                    {d => <void-option value={d.name}>{d.name} ({d.protocol})</void-option>}
+                  </For>
+                </void-combobox>
+              )}
             </Show>
           </div>
           <div class="card-body">
@@ -342,13 +343,15 @@ export default function App() {
                   <span> {selectedName()}</span>
                 </void-alert>
               }>
-                <div class="stat-grid">
-                  <void-stat size="sm" label="System" value={heater()!.power} />
-                  <void-stat size="sm" label="State" value={heater()!.step} />
-                  <void-stat size="sm" label="Core" value={`${heater()!.exhaust_temp.toFixed(1)}°C`} />
-                  <void-stat size="sm" label="Ambient" value={`${heater()!.ambient_temp.toFixed(1)}°C`} />
-                  <void-stat size="sm" label="Voltage" value={`${heater()!.voltage.toFixed(1)}V`} />
-                </div>
+                <void-collapsible heading="Status" open>
+                  <div class="stat-grid">
+                    <void-stat size="sm" label="System" value={heater()!.power} />
+                    <void-stat size="sm" label="State" value={heater()!.step} />
+                    <void-stat size="sm" label="Core" value={`${heater()!.exhaust_temp.toFixed(1)}°C`} />
+                    <void-stat size="sm" label="Ambient" value={`${heater()!.ambient_temp.toFixed(1)}°C`} />
+                    <void-stat size="sm" label="Voltage" value={`${heater()!.voltage.toFixed(1)}V`} />
+                  </div>
+                </void-collapsible>
               </Show>
             </Show>
           </div>
