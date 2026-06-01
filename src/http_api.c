@@ -11,8 +11,11 @@
 
 #include <auto_damper/damper.h>
 #include <auto_damper/heater.h>
+#include <auto_damper/ota.h>
 #include <auto_damper/wifi.h>
 #include <auto_damper/zbus.h>
+
+#include <bootutil/bootutil_public.h>
 
 
 LOG_MODULE_REGISTER(http_api, LOG_LEVEL_INF);
@@ -872,6 +875,146 @@ static struct http_resource_detail_dynamic metrics_detail = {
 
 HTTP_RESOURCE_DEFINE(metrics_res, damper_http_service, "/metrics",
                      &metrics_detail);
+
+//////////////////////////////////////////////////////////////
+// /api/ota* - OTA Operations
+//
+// Mirrors the operations available via the WebSocket layer and the
+// shell `damper ota` commands. The long-running ones (check, install,
+// revert) dispatch to the shared ota worker thread and return 202;
+// progress flows over the WebSocket to any connected client. The
+// instant ones (confirm, auto_revert get/set) run synchronously.
+//////////////////////////////////////////////////////////////
+
+static char ota_buf[JSON_BUF_SIZE];
+
+static const char *ota_swap_type_name(int swap_type)
+{
+  switch (swap_type) {
+  case BOOT_SWAP_TYPE_NONE:   return "none";
+  case BOOT_SWAP_TYPE_TEST:   return "test";
+  case BOOT_SWAP_TYPE_PERM:   return "perm";
+  case BOOT_SWAP_TYPE_REVERT: return "revert";
+  case BOOT_SWAP_TYPE_FAIL:   return "fail";
+  default:                    return "unknown";
+  }
+}
+
+static int ota_status_get(struct http_response_ctx *rsp)
+{
+  char running[16], prev[16];
+  ota_get_running_version(running, sizeof(running));
+  ota_get_previous_version(prev, sizeof(prev));
+  int swap_type = boot_swap_type();
+
+  int len = snprintf(ota_buf, sizeof(ota_buf),
+      "{\"running_version\":\"%s\","
+      "\"previous_version\":\"%s\","
+      "\"auto_revert_enabled\":%s,"
+      "\"swap_type\":\"%s\"}",
+      running, prev,
+      ota_auto_revert_enabled() ? "true" : "false",
+      ota_swap_type_name(swap_type));
+  return send_json(rsp, ota_buf, len);
+}
+
+static int ota_enqueue_response(struct http_response_ctx *rsp,
+                                enum ota_worker_op op)
+{
+  int rc = ota_worker_request(op);
+  if (rc == -EBUSY) {
+    return send_error(rsp, ota_buf, 409, "ota already in progress");
+  }
+  if (rc < 0) {
+    return send_error(rsp, ota_buf, 500, "enqueue failed");
+  }
+  /* Accepted; progress streams over WS. */
+  int len = snprintf(ota_buf, sizeof(ota_buf), "{\"accepted\":true}");
+  rsp->body = (const uint8_t *)ota_buf;
+  rsp->body_len = len;
+  rsp->final_chunk = true;
+  rsp->status = HTTP_202_ACCEPTED;
+  rsp->header_count = 0;
+  return 0;
+}
+
+static int ota_confirm_post(struct http_response_ctx *rsp)
+{
+  int rc = boot_set_confirmed();
+  if (rc != 0) {
+    return send_error(rsp, ota_buf, 500, "boot_set_confirmed failed");
+  }
+  return send_ok(rsp, ota_buf);
+}
+
+static int ota_auto_revert_handler(int method,
+                                   const struct http_request_ctx *req,
+                                   struct http_response_ctx *rsp)
+{
+  if (method == HTTP_GET) {
+    int len = snprintf(ota_buf, sizeof(ota_buf), "{\"enabled\":%s}",
+                       ota_auto_revert_enabled() ? "true" : "false");
+    return send_json(rsp, ota_buf, len);
+  }
+  /* PUT / POST: read {"enabled": bool}. */
+  bool enabled;
+  if (!json_get_bool((const char *)req->data, "enabled", &enabled)) {
+    return send_error(rsp, ota_buf, 400, "missing 'enabled' bool");
+  }
+  int rc = ota_set_auto_revert_enabled(enabled);
+  if (rc < 0) {
+    return send_error(rsp, ota_buf, 500, "nvs save failed");
+  }
+  int len = snprintf(ota_buf, sizeof(ota_buf), "{\"enabled\":%s}",
+                     enabled ? "true" : "false");
+  return send_json(rsp, ota_buf, len);
+}
+
+static int handle_api_ota(struct http_client_ctx *client,
+                          enum http_transaction_status status,
+                          const struct http_request_ctx *req,
+                          struct http_response_ctx *rsp,
+                          void *user_data)
+{
+  ARG_UNUSED(user_data);
+  if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+    return 0;
+  }
+  const char *url = (const char *)client->url_buffer;
+
+  if (strcmp(url, "/api/ota") == 0 && client->method == HTTP_GET) {
+    return ota_status_get(rsp);
+  }
+  if (strcmp(url, "/api/ota/check") == 0 && client->method == HTTP_POST) {
+    return ota_enqueue_response(rsp, OTA_WORKER_CHECK);
+  }
+  if (strcmp(url, "/api/ota/install") == 0 && client->method == HTTP_POST) {
+    return ota_enqueue_response(rsp, OTA_WORKER_INSTALL);
+  }
+  if (strcmp(url, "/api/ota/revert") == 0 && client->method == HTTP_POST) {
+    return ota_enqueue_response(rsp, OTA_WORKER_REVERT);
+  }
+  if (strcmp(url, "/api/ota/confirm") == 0 && client->method == HTTP_POST) {
+    return ota_confirm_post(rsp);
+  }
+  if (strcmp(url, "/api/ota/auto_revert") == 0) {
+    return ota_auto_revert_handler(client->method, req, rsp);
+  }
+  return send_error(rsp, ota_buf, 404, "not found");
+}
+
+static struct http_resource_detail_dynamic api_ota_detail = {
+    .common = {
+        .type = HTTP_RESOURCE_TYPE_DYNAMIC,
+        .bitmask_of_supported_http_methods =
+            BIT(HTTP_GET) | BIT(HTTP_POST) | BIT(HTTP_PUT),
+        .content_type = "application/json",
+    },
+    .cb = handle_api_ota,
+};
+
+HTTP_RESOURCE_DEFINE(api_ota_res, damper_http_service,
+                     "/api/ota*", &api_ota_detail);
 
 //////////////////////////////////////////////////////////////
 // Server Lifecycle
