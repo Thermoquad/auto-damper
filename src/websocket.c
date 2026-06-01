@@ -27,7 +27,9 @@ extern const struct http_service_desc damper_http_service;
 //////////////////////////////////////////////////////////////
 
 #define WS_MAX_CLIENTS 4
-#define WS_BUF_SIZE 512
+/* Sized for the worst case: heater_states message with all 10 slots
+ * populated. Each per-heater JSON object runs ~350B, plus envelope. */
+#define WS_BUF_SIZE 4096
 #define WS_RECV_BUF_SIZE 256
 #define WS_RECV_TIMEOUT_MS 100
 #define WS_SEND_TIMEOUT_MS 500
@@ -48,7 +50,7 @@ static struct ws_client ws_clients[WS_MAX_CLIENTS];
 // Work Queue
 //////////////////////////////////////////////////////////////
 
-#define WS_STACK_SIZE 2048
+#define WS_STACK_SIZE 4096
 
 K_THREAD_STACK_DEFINE(ws_work_stack, WS_STACK_SIZE);
 static struct k_work_q ws_work_q;
@@ -93,10 +95,50 @@ static void ws_send_to(int slot, const char *json, int len)
 
 ZBUS_SUBSCRIBER_DEFINE(ws_sub, 8);
 ZBUS_CHAN_ADD_OBS(damper_data_chan, ws_sub, 5);
-ZBUS_CHAN_ADD_OBS(heater_data_chan, ws_sub, 5);
+ZBUS_CHAN_ADD_OBS(heater_states_chan, ws_sub, 5);
 ZBUS_CHAN_ADD_OBS(heater_devices_chan, ws_sub, 5);
 
-#define WS_SUB_STACK_SIZE 2048
+/* Serialize one heater_data into the JSON array entry. Returns bytes
+ * written. Caller ensures buf has at least 400 bytes remaining. */
+static int ws_format_heater(char *buf, size_t cap, const struct heater_data *h)
+{
+  return snprintf(buf, cap,
+      "{\"name\":\"%s\","
+      "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
+      "\"core_temp\":%.1f,\"ambient_temp\":%.1f,"
+      "\"voltage\":%.1f,\"target_temp\":%d,"
+      "\"power_level\":%d,\"error\":%d,"
+      "\"altitude_mode\":%s,"
+      "\"startup_offset\":%d,\"shutdown_offset\":%d,"
+      "\"ble_rssi_dbm\":%d,"
+      "\"connected\":%s}",
+      h->name,
+      heater_power_state_str(h->power),
+      heater_run_step_str(h->step),
+      heater_run_mode_str(h->mode),
+      h->core_temp_c, h->ambient_temp_c,
+      h->voltage, h->target_temp,
+      h->power_level, h->error_code,
+      h->altitude_mode ? "true" : "false",
+      h->startup_offset, h->shutdown_offset,
+      (int)h->ble_rssi_dbm,
+      h->connected ? "true" : "false");
+}
+
+static bool ws_is_heater_connected(const char *name)
+{
+  struct heater_states st;
+  zbus_chan_read(&heater_states_chan, &st, K_NO_WAIT);
+  for (int i = 0; i < st.count && i < HEATERS_MAX; i++) {
+    if (st.heaters[i].connected &&
+        strcmp(st.heaters[i].name, name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+#define WS_SUB_STACK_SIZE 4096
 #define WS_SUB_PRIORITY 7
 
 static void ws_subscriber_thread(void *p1, void *p2, void *p3)
@@ -134,43 +176,36 @@ static void ws_subscriber_thread(void *p1, void *p2, void *p3)
           data.heater_name[0] ? "\"" : "",
           data.heater_name[0] ? data.heater_name : "null",
           data.heater_name[0] ? "\"" : "");
-    } else if (chan == &heater_data_chan) {
-      struct heater_data data;
-      zbus_chan_read(chan, &data, K_NO_WAIT);
-      len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
-          "{\"type\":\"heater\","
-          "\"name\":%s%s%s,"
-          "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
-          "\"core_temp\":%.1f,\"ambient_temp\":%.1f,"
-          "\"voltage\":%.1f,\"target_temp\":%d,"
-          "\"power_level\":%d,\"error\":%d,"
-          "\"altitude_mode\":%s,"
-          "\"startup_offset\":%d,\"shutdown_offset\":%d,"
-          "\"connected\":%s}",
-          data.name[0] ? "\"" : "",
-          data.name[0] ? data.name : "null",
-          data.name[0] ? "\"" : "",
-          heater_power_state_str(data.power),
-          heater_run_step_str(data.step),
-          heater_run_mode_str(data.mode),
-          data.core_temp_c, data.ambient_temp_c,
-          data.voltage, data.target_temp,
-          data.power_level, data.error_code,
-          data.altitude_mode ? "true" : "false",
-          data.startup_offset, data.shutdown_offset,
-          data.connected ? "true" : "false");
+    } else if (chan == &heater_states_chan) {
+      /* heater_states is a large channel (~1.2KB); read in place via
+       * claim to avoid stack-allocating the full struct here. */
+      if (zbus_chan_claim(chan, K_MSEC(100)) == 0) {
+        const struct heater_states *states = zbus_chan_const_msg(chan);
+        len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
+                       "{\"type\":\"heater_states\",\"heaters\":[");
+        for (int i = 0; i < states->count && i < HEATERS_MAX; i++) {
+          if (len > (int)sizeof(ws_tx_buf) - 400) break;
+          if (i > 0) ws_tx_buf[len++] = ',';
+          len += ws_format_heater(ws_tx_buf + len,
+                                  sizeof(ws_tx_buf) - len,
+                                  &states->heaters[i]);
+        }
+        len += snprintf(ws_tx_buf + len, sizeof(ws_tx_buf) - len, "]}");
+        zbus_chan_finish(chan);
+      }
     } else if (chan == &heater_devices_chan) {
       struct heater_devices devs;
       zbus_chan_read(chan, &devs, K_NO_WAIT);
       len = snprintf(ws_tx_buf, sizeof(ws_tx_buf),
-          "{\"type\":\"heaters\",\"connected\":%d,\"devices\":[",
-          devs.connected_index);
-      for (int i = 0; i < devs.count && len < (int)sizeof(ws_tx_buf) - 80; i++) {
+          "{\"type\":\"heaters\",\"devices\":[");
+      for (int i = 0; i < devs.count && len < (int)sizeof(ws_tx_buf) - 100; i++) {
         if (i > 0) ws_tx_buf[len++] = ',';
         len += snprintf(ws_tx_buf + len, sizeof(ws_tx_buf) - len,
-            "{\"name\":\"%s\",\"rssi\":%d,\"protocol\":\"%s\"}",
+            "{\"name\":\"%s\",\"rssi\":%d,\"protocol\":\"%s\","
+            "\"connected\":%s}",
             devs.devices[i].name, devs.devices[i].rssi,
-            devs.devices[i].protocol);
+            devs.devices[i].protocol,
+            ws_is_heater_connected(devs.devices[i].name) ? "true" : "false");
       }
       len += snprintf(ws_tx_buf + len, sizeof(ws_tx_buf) - len, "]}");
     }
@@ -413,39 +448,17 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     struct heater_devices devs;
     zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
     int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
-        "{\"type\":\"heaters\",\"connected\":%d,\"devices\":[",
-        devs.connected_index);
-    for (int i = 0; i < devs.count && len < (int)sizeof(ws_cmd_buf) - 80; i++) {
+        "{\"type\":\"heaters\",\"devices\":[");
+    for (int i = 0; i < devs.count && len < (int)sizeof(ws_cmd_buf) - 100; i++) {
       if (i > 0) ws_cmd_buf[len++] = ',';
       len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len,
-          "{\"name\":\"%s\",\"rssi\":%d,\"protocol\":\"%s\"}",
+          "{\"name\":\"%s\",\"rssi\":%d,\"protocol\":\"%s\","
+          "\"connected\":%s}",
           devs.devices[i].name, devs.devices[i].rssi,
-          devs.devices[i].protocol);
+          devs.devices[i].protocol,
+          ws_is_heater_connected(devs.devices[i].name) ? "true" : "false");
     }
     len += snprintf(ws_cmd_buf + len, sizeof(ws_cmd_buf) - len, "]}");
-    ws_send_to(slot, ws_cmd_buf, len);
-    return;
-
-  } else if (strcmp(type, "heater.status") == 0) {
-    struct heater_data data;
-    zbus_chan_read(&heater_data_chan, &data, K_NO_WAIT);
-    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
-        "{\"type\":\"heater\","
-        "\"name\":%s%s%s,"
-        "\"power\":\"%s\",\"step\":\"%s\",\"mode\":\"%s\","
-        "\"core_temp\":%.1f,\"ambient_temp\":%.1f,"
-        "\"voltage\":%.1f,\"target_temp\":%d,"
-        "\"power_level\":%d,\"error\":%d,\"connected\":%s}",
-        data.name[0] ? "\"" : "",
-        data.name[0] ? data.name : "null",
-        data.name[0] ? "\"" : "",
-        heater_power_state_str(data.power),
-        heater_run_step_str(data.step),
-        heater_run_mode_str(data.mode),
-        data.core_temp_c, data.ambient_temp_c,
-        data.voltage, data.target_temp,
-        data.power_level, data.error_code,
-        data.connected ? "true" : "false");
     ws_send_to(slot, ws_cmd_buf, len);
     return;
 
@@ -464,10 +477,24 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
     ws_send_result(slot, true, NULL);
 
+  } else if (strcmp(type, "heaters.disconnect") == 0) {
+    char target[32];
+    if (!ws_json_get_string(msg, "target", target, sizeof(target))) {
+      ws_send_result(slot, false, "need target");
+      return;
+    }
+    struct heater_command cmd = {.type = HEATER_CMD_DISCONNECT};
+    strncpy(cmd.target_name, target, sizeof(cmd.target_name) - 1);
+    zbus_chan_pub(&heater_command_chan, &cmd, K_MSEC(100));
+    ws_send_result(slot, true, NULL);
+
   } else if (strcmp(type, "heater.command") == 0) {
-    struct heater_data hstate;
-    zbus_chan_read(&heater_data_chan, &hstate, K_NO_WAIT);
-    if (!hstate.connected) {
+    char target[32];
+    if (!ws_json_get_string(msg, "target", target, sizeof(target))) {
+      ws_send_result(slot, false, "need target");
+      return;
+    }
+    if (!ws_is_heater_connected(target)) {
       ws_send_result(slot, false, "not connected");
       return;
     }
@@ -475,7 +502,8 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     bool power_val;
     int int_val;
     char mode_str[16];
-    struct heater_command cmd;
+    struct heater_command cmd = {0};
+    strncpy(cmd.target_name, target, sizeof(cmd.target_name) - 1);
 
     if (ws_json_get_bool(msg, "power", &power_val)) {
       cmd.type = HEATER_CMD_POWER;
@@ -515,33 +543,37 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     /* Re-broadcast a pending notification to all clients so every
      * connected UI puts a spinner on the relevant button until the
      * heater's next telemetry update reflects the new state. */
-    char pending_buf[128];
+    char pending_buf[160];
     int plen = 0;
     switch (cmd.type) {
     case HEATER_CMD_POWER:
       plen = snprintf(pending_buf, sizeof(pending_buf),
-          "{\"type\":\"heater.pending\",\"field\":\"power\",\"value\":%s}",
-          cmd.power_on ? "true" : "false");
+          "{\"type\":\"heater.pending\",\"target\":\"%s\",\"field\":\"power\",\"value\":%s}",
+          target, cmd.power_on ? "true" : "false");
       break;
     case HEATER_CMD_SET_MODE: {
       const char *m = cmd.mode == HEATER_MODE_MANUAL ? "manual" :
                       cmd.mode == HEATER_MODE_AUTOMATIC ? "automatic" :
                       cmd.mode == HEATER_MODE_FAN ? "fan" : "";
       plen = snprintf(pending_buf, sizeof(pending_buf),
-          "{\"type\":\"heater.pending\",\"field\":\"mode\",\"value\":\"%s\"}", m);
+          "{\"type\":\"heater.pending\",\"target\":\"%s\",\"field\":\"mode\",\"value\":\"%s\"}",
+          target, m);
       break;
     }
     case HEATER_CMD_ALTITUDE:
       plen = snprintf(pending_buf, sizeof(pending_buf),
-          "{\"type\":\"heater.pending\",\"field\":\"altitude\"}");
+          "{\"type\":\"heater.pending\",\"target\":\"%s\",\"field\":\"altitude\"}",
+          target);
       break;
     case HEATER_CMD_ADJUST_POWER:
       plen = snprintf(pending_buf, sizeof(pending_buf),
-          "{\"type\":\"heater.pending\",\"field\":\"power_level\"}");
+          "{\"type\":\"heater.pending\",\"target\":\"%s\",\"field\":\"power_level\"}",
+          target);
       break;
     case HEATER_CMD_SET_AUTO_OFFSETS:
       plen = snprintf(pending_buf, sizeof(pending_buf),
-          "{\"type\":\"heater.pending\",\"field\":\"auto_offsets\"}");
+          "{\"type\":\"heater.pending\",\"target\":\"%s\",\"field\":\"auto_offsets\"}",
+          target);
       break;
     default:
       break;

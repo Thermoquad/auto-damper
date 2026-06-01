@@ -424,6 +424,47 @@ static int find_heater_by_name(const char *name)
   return -1;
 }
 
+/* Connection state lives in heater_states_chan now, keyed by name.
+ * These helpers translate the old "connected_index" view into
+ * per-name lookups. */
+static bool is_heater_connected(const char *name)
+{
+  struct heater_states st;
+  zbus_chan_read(&heater_states_chan, &st, K_NO_WAIT);
+  for (int i = 0; i < st.count && i < HEATERS_MAX; i++) {
+    if (st.heaters[i].connected &&
+        strcmp(st.heaters[i].name, name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool any_heater_connected(void)
+{
+  struct heater_states st;
+  zbus_chan_read(&heater_states_chan, &st, K_NO_WAIT);
+  for (int i = 0; i < st.count && i < HEATERS_MAX; i++) {
+    if (st.heaters[i].connected) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool get_heater_by_name(const char *name, struct heater_data *out)
+{
+  struct heater_states st;
+  zbus_chan_read(&heater_states_chan, &st, K_NO_WAIT);
+  for (int i = 0; i < st.count && i < HEATERS_MAX; i++) {
+    if (strcmp(st.heaters[i].name, name) == 0) {
+      *out = st.heaters[i];
+      return true;
+    }
+  }
+  return false;
+}
+
 static int heaters_scan(const struct http_request_ctx *req,
                         struct http_response_ctx *rsp)
 {
@@ -460,7 +501,7 @@ static int heaters_list(struct http_response_ctx *rsp)
         i > 0 ? "," : "",
         devs.devices[i].name, devs.devices[i].rssi,
         devs.devices[i].protocol,
-        i == devs.connected_index ? "true" : "false");
+        is_heater_connected(devs.devices[i].name) ? "true" : "false");
   }
 
   off += snprintf(heaters_buf + off, sizeof(heaters_buf) - off, "]}");
@@ -480,7 +521,7 @@ static int heater_item(const char *url, enum http_method method,
   zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);
 
   int idx = find_heater_by_name(name);
-  bool is_connected = (idx >= 0 && idx == devs.connected_index);
+  bool is_connected = (idx >= 0 && is_heater_connected(name));
 
   if (method == HTTP_GET) {
     if (idx < 0) {
@@ -489,7 +530,7 @@ static int heater_item(const char *url, enum http_method method,
 
     if (is_connected) {
       struct heater_data hdata = {0};
-      zbus_chan_read(&heater_data_chan, &hdata, K_NO_WAIT);
+      get_heater_by_name(name, &hdata);
 
       int len = snprintf(heater_buf, sizeof(heater_buf),
           "{\"name\":\"%s\",\"protocol\":\"%s\",\"connected\":true,"
@@ -522,7 +563,7 @@ static int heater_item(const char *url, enum http_method method,
     if (idx < 0) {
       return send_error(rsp, heater_buf, 404, "heater not found");
     }
-    if (devs.connected_index >= 0) {
+    if (any_heater_connected()) {
       return send_error(rsp, heater_buf, 409, "already connected");
     }
 
@@ -659,7 +700,14 @@ static int build_metrics(void)
   struct damper_data dd = {0};
   zbus_chan_read(&damper_data_chan, &dd, K_NO_WAIT);
   struct heater_data hd = {0};
-  zbus_chan_read(&heater_data_chan, &hd, K_NO_WAIT);
+  struct heater_states heater_st = {0};
+  zbus_chan_read(&heater_states_chan, &heater_st, K_NO_WAIT);
+  for (int i = 0; i < heater_st.count && i < HEATERS_MAX; i++) {
+    if (heater_st.heaters[i].connected) {
+      hd = heater_st.heaters[i];
+      break;
+    }
+  }
 
   /* Uptime */
   M_APPEND("# HELP auto_damper_uptime_seconds Seconds since boot\n"

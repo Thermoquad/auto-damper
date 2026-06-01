@@ -29,7 +29,7 @@ extern void damper_thread(void *, void *, void *);
 // Thread: Damper Controller
 //////////////////////////////////////////////////////////////
 
-#define DAMPER_STACK_SIZE 2048
+#define DAMPER_STACK_SIZE 4096
 #define DAMPER_PRIORITY 4
 
 K_THREAD_DEFINE(damper_thread_id, DAMPER_STACK_SIZE,

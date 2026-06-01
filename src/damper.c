@@ -187,14 +187,17 @@ static void send_heater_power(bool on)
 
 static bool get_heater_state(struct heater_data *hdata)
 {
-  zbus_chan_read(&heater_data_chan, hdata, K_NO_WAIT);
+  struct heater_states states;
+  zbus_chan_read(&heater_states_chan, &states, K_NO_WAIT);
 
-  if (!hdata->connected ||
-      strcmp(hdata->name, damper_cfg.heater_name) != 0) {
-    return false;
+  for (int i = 0; i < states.count && i < HEATERS_MAX; i++) {
+    if (states.heaters[i].connected &&
+        strcmp(states.heaters[i].name, damper_cfg.heater_name) == 0) {
+      *hdata = states.heaters[i];
+      return true;
+    }
   }
-
-  return true;
+  return false;
 }
 
 //////////////////////////////////////////////////////////////

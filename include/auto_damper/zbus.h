@@ -67,12 +67,18 @@ ZBUS_CHAN_DECLARE(damper_data_chan);
 
 //////////////////////////////////////////////////////////////
 // Heater Command Channel
+//
+// Commands carry a target_name to identify which heater they apply
+// to. Global commands (SCAN, SCAN_STOP, CONNECT, RAW) leave it empty.
+// Per-heater commands (POWER, SET_MODE, etc.) must set target_name to
+// the heater's BLE-advertised name.
 //////////////////////////////////////////////////////////////
 
 enum heater_cmd_type {
   HEATER_CMD_SCAN,
   HEATER_CMD_SCAN_STOP,
   HEATER_CMD_CONNECT,
+  HEATER_CMD_DISCONNECT,
   HEATER_CMD_POWER,
   HEATER_CMD_SET_MODE,
   HEATER_CMD_SET_TEMP,
@@ -85,6 +91,7 @@ enum heater_cmd_type {
 
 struct heater_command {
   enum heater_cmd_type type;
+  char target_name[32];  /* empty for global commands */
   union {
     int scan_timeout;
     int connect_index;
@@ -106,10 +113,10 @@ struct heater_command {
 ZBUS_CHAN_DECLARE(heater_command_chan);
 
 //////////////////////////////////////////////////////////////
-// Heater Devices Channel
+// Heater Devices Channel — scan results (discovered, not connected)
 //////////////////////////////////////////////////////////////
 
-#define HEATER_DEVICES_MAX 8
+#define HEATER_DEVICES_MAX 10
 
 struct heater_device_info {
   char name[32];
@@ -120,16 +127,27 @@ struct heater_device_info {
 struct heater_devices {
   struct heater_device_info devices[HEATER_DEVICES_MAX];
   int count;
-  int connected_index;
 };
 
 ZBUS_CHAN_DECLARE(heater_devices_chan);
 
 //////////////////////////////////////////////////////////////
-// Heater Data Channel
+// Heater State Channel — collection of N currently-managed heaters
+//
+// The payload carries up to HEATERS_MAX slots. Each slot is a
+// per-heater struct heater_data; identification is by the `name`
+// field. Consumers iterate `heaters[0..count-1]`. Empty slots have
+// the zero-initialized struct.
 //////////////////////////////////////////////////////////////
 
-ZBUS_CHAN_DECLARE(heater_data_chan);
+#define HEATERS_MAX 10
+
+struct heater_states {
+  struct heater_data heaters[HEATERS_MAX];
+  int count;
+};
+
+ZBUS_CHAN_DECLARE(heater_states_chan);
 
 //////////////////////////////////////////////////////////////
 // Radio Status Channel — WiFi link state only.

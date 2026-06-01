@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include <string.h>
+
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
@@ -8,6 +10,7 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/net_buf.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/zbus/zbus.h>
@@ -32,7 +35,7 @@ static const struct heater_protocol *protocols[] = {
 // Scan Results
 //////////////////////////////////////////////////////////////
 
-#define MAX_SCAN_RESULTS 8
+#define MAX_SCAN_RESULTS 10
 
 struct ble_scan_result {
   bt_addr_le_t addr;
@@ -46,63 +49,78 @@ static int scan_count;
 static bool scanning;
 
 //////////////////////////////////////////////////////////////
-// Connection State
+// Heater Slots
+//
+// One slot per concurrent heater. A slot becomes `active` when
+// heater_ble_connect() picks it up; it stays active across
+// disconnects when auto_reconnect is true. Discovery / subscribe
+// param structs live in the slot because the GATT subsystem retains
+// pointers to them for the duration of an operation — sharing
+// across slots would corrupt in-flight discoveries on other heaters.
 //////////////////////////////////////////////////////////////
 
-static struct bt_conn *heater_conn;
-static const struct heater_protocol *active_protocol;
+struct heater_slot {
+  bool active;
+  struct bt_conn *conn;
+  const struct heater_protocol *protocol;
+  bt_addr_le_t addr;
+
+  struct heater_data data;
+
+  uint16_t write_handle;
+  uint16_t notify_handle;
+  uint16_t svc_start_handle;
+  uint16_t svc_end_handle;
+
+  struct bt_gatt_discover_params disc_params;
+  struct bt_uuid_16 disc_uuid;
+  struct bt_gatt_subscribe_params sub_params;
+  struct bt_gatt_discover_params ccc_disc_params;
+
+  struct k_work_delayable heartbeat_work;
+  struct k_work_delayable reconnect_work;
+  struct k_work_delayable offset_query_work;
+
+  bool auto_reconnect;
+};
+
+static struct heater_slot slots[HEATERS_MAX];
+
 static const struct heater_protocol *forced_protocol;
-
-static uint16_t write_handle;
-static uint16_t notify_handle;
-static uint16_t svc_start_handle;
-static uint16_t svc_end_handle;
-
-static struct bt_gatt_discover_params disc_params;
-static struct bt_uuid_16 disc_uuid;
-static struct bt_gatt_subscribe_params sub_params;
-static struct bt_gatt_discover_params ccc_disc_params;
-
-static int connected_index = -1;
-static bool auto_reconnect;
-static struct heater_data last_heater_data;
 
 //////////////////////////////////////////////////////////////
 // Forward Declarations
 //////////////////////////////////////////////////////////////
 
-static void start_discovery(void);
-static void subscribe_notify(void);
+static void start_discovery(struct heater_slot *s);
+static void subscribe_notify(struct heater_slot *s);
 static void heartbeat_handler(struct k_work *work);
 static void reconnect_handler(struct k_work *work);
+static void offset_query_handler(struct k_work *work);
+static void radio_publish_handler(struct k_work *work);
 static void schedule_rescan(void);
+static void publish_heater_state(void);
+static void publish_devices(void);
+static int connect_slot(struct heater_slot *s);
 int heater_ble_scan(int timeout_sec);
 int heater_ble_connect(int index);
 
-static void offset_query_handler(struct k_work *work);
-static void radio_publish_handler(struct k_work *work);
-
-static K_WORK_DELAYABLE_DEFINE(heartbeat_work, heartbeat_handler);
-static K_WORK_DELAYABLE_DEFINE(reconnect_work, reconnect_handler);
-static K_WORK_DELAYABLE_DEFINE(offset_query_work, offset_query_handler);
 static K_WORK_DELAYABLE_DEFINE(radio_publish_work, radio_publish_handler);
-#define RADIO_PUBLISH_INTERVAL_MS 2000
 
+#define RADIO_PUBLISH_INTERVAL_MS 2000
 #define RECONNECT_DELAY_MS 3000
 
 //////////////////////////////////////////////////////////////
-// Zbus Channel
+// Zbus Channels
 //////////////////////////////////////////////////////////////
 
-ZBUS_CHAN_DEFINE(heater_data_chan, struct heater_data, NULL, NULL,
+ZBUS_CHAN_DEFINE(heater_states_chan, struct heater_states, NULL, NULL,
                 ZBUS_OBSERVERS_EMPTY,
-                ZBUS_MSG_INIT(.power = HEATER_POWER_OFF,
-                              .step = HEATER_STEP_IDLE, .connected = false,
-                              .timestamp_us = 0));
+                ZBUS_MSG_INIT(.count = 0));
 
 ZBUS_CHAN_DEFINE(heater_devices_chan, struct heater_devices, NULL, NULL,
                 ZBUS_OBSERVERS_EMPTY,
-                ZBUS_MSG_INIT(.count = 0, .connected_index = -1));
+                ZBUS_MSG_INIT(.count = 0));
 
 static void heater_cmd_callback(const struct zbus_channel *chan);
 ZBUS_LISTENER_DEFINE(heater_cmd_listener, heater_cmd_callback);
@@ -111,9 +129,93 @@ ZBUS_CHAN_DEFINE(heater_command_chan, struct heater_command, NULL, NULL,
                 ZBUS_OBSERVERS(heater_cmd_listener),
                 ZBUS_MSG_INIT(.type = HEATER_CMD_SCAN));
 
+//////////////////////////////////////////////////////////////
+// Slot Helpers
+//////////////////////////////////////////////////////////////
+
+static struct heater_slot *slot_for_conn(struct bt_conn *conn)
+{
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (slots[i].conn == conn) {
+      return &slots[i];
+    }
+  }
+  return NULL;
+}
+
+static struct heater_slot *slot_for_name(const char *name)
+{
+  if (!name || name[0] == '\0') {
+    return NULL;
+  }
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (slots[i].active && strcmp(slots[i].data.name, name) == 0) {
+      return &slots[i];
+    }
+  }
+  return NULL;
+}
+
+static struct heater_slot *find_free_slot(void)
+{
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (!slots[i].active) {
+      return &slots[i];
+    }
+  }
+  return NULL;
+}
+
+static void release_slot(struct heater_slot *s)
+{
+  if (!s) {
+    return;
+  }
+  k_work_cancel_delayable(&s->heartbeat_work);
+  k_work_cancel_delayable(&s->reconnect_work);
+  k_work_cancel_delayable(&s->offset_query_work);
+  if (s->conn) {
+    bt_conn_unref(s->conn);
+    s->conn = NULL;
+  }
+  s->active = false;
+  s->protocol = NULL;
+  s->auto_reconnect = false;
+  s->write_handle = 0;
+  s->notify_handle = 0;
+  s->svc_start_handle = 0;
+  s->svc_end_handle = 0;
+  memset(&s->data, 0, sizeof(s->data));
+  memset(&s->addr, 0, sizeof(s->addr));
+}
+
+//////////////////////////////////////////////////////////////
+// Publication
+//////////////////////////////////////////////////////////////
+
+static void publish_heater_state(void)
+{
+  /* struct heater_states is ~1.2KB — too large to stack-allocate in
+   * a BT host callback. Claim the channel's storage and write in
+   * place; finish + notify dispatches to observers. */
+  if (zbus_chan_claim(&heater_states_chan, K_MSEC(100)) != 0) {
+    return;
+  }
+  struct heater_states *msg = zbus_chan_msg(&heater_states_chan);
+
+  msg->count = 0;
+  for (int i = 0; i < HEATERS_MAX && msg->count < HEATERS_MAX; i++) {
+    if (slots[i].active) {
+      msg->heaters[msg->count++] = slots[i].data;
+    }
+  }
+  zbus_chan_finish(&heater_states_chan);
+  zbus_chan_notify(&heater_states_chan, K_MSEC(100));
+}
+
 static void publish_devices(void)
 {
-  struct heater_devices msg = {.count = scan_count, .connected_index = connected_index};
+  struct heater_devices msg = {.count = scan_count};
 
   for (int i = 0; i < scan_count && i < HEATER_DEVICES_MAX; i++) {
     strncpy(msg.devices[i].name, scan_results[i].name,
@@ -133,56 +235,41 @@ static void publish_devices(void)
 
 static void heartbeat_handler(struct k_work *work)
 {
-  ARG_UNUSED(work);
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct heater_slot *s = CONTAINER_OF(dwork, struct heater_slot, heartbeat_work);
 
-  if (!heater_conn || !active_protocol || write_handle == 0) {
+  if (!s->conn || !s->protocol || s->write_handle == 0) {
     return;
   }
 
   uint8_t buf[16];
-  int pkt_len = active_protocol->encode_ping(buf, sizeof(buf));
+  int pkt_len = s->protocol->encode_ping(buf, sizeof(buf));
 
   if (pkt_len > 0) {
-    bt_gatt_write_without_response(heater_conn, write_handle, buf, pkt_len,
-                                   false);
+    bt_gatt_write_without_response(s->conn, s->write_handle, buf, pkt_len, false);
   }
-
-  k_work_schedule(&heartbeat_work, K_MSEC(active_protocol->heartbeat_ms));
-}
-
-static void start_heartbeat(void)
-{
-  if (active_protocol) {
-    k_work_schedule(&heartbeat_work, K_MSEC(100));
-  }
-}
-
-static void stop_heartbeat(void)
-{
-  k_work_cancel_delayable(&heartbeat_work);
+  k_work_schedule(&s->heartbeat_work, K_MSEC(s->protocol->heartbeat_ms));
 }
 
 static void offset_query_handler(struct k_work *work)
 {
-  ARG_UNUSED(work);
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct heater_slot *s = CONTAINER_OF(dwork, struct heater_slot, offset_query_work);
 
-  if (!heater_conn || !active_protocol || write_handle == 0) {
+  if (!s->conn || !s->protocol || s->write_handle == 0) {
     return;
   }
 
   uint8_t buf[16];
-
-  int pkt_len = active_protocol->encode_ping(buf, sizeof(buf));
+  int pkt_len = s->protocol->encode_ping(buf, sizeof(buf));
   if (pkt_len > 0) {
-    bt_gatt_write_without_response(heater_conn, write_handle, buf, pkt_len,
-                                   false);
+    bt_gatt_write_without_response(s->conn, s->write_handle, buf, pkt_len, false);
   }
 
-  if (active_protocol->encode_query_auto_offsets) {
-    int qlen = active_protocol->encode_query_auto_offsets(buf, sizeof(buf));
+  if (s->protocol->encode_query_auto_offsets) {
+    int qlen = s->protocol->encode_query_auto_offsets(buf, sizeof(buf));
     if (qlen > 0) {
-      bt_gatt_write_without_response(heater_conn, write_handle, buf, qlen,
-                                     false);
+      bt_gatt_write_without_response(s->conn, s->write_handle, buf, qlen, false);
     }
   }
 }
@@ -193,17 +280,18 @@ static void offset_query_handler(struct k_work *work)
 
 static void reconnect_handler(struct k_work *work)
 {
-  ARG_UNUSED(work);
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct heater_slot *s = CONTAINER_OF(dwork, struct heater_slot, reconnect_work);
 
-  if (heater_conn || !auto_reconnect || connected_index < 0) {
+  if (!s->active || s->conn || !s->auto_reconnect) {
     return;
   }
 
-  LOG_INF("Auto-reconnecting to index %d...", connected_index);
-  int err = heater_ble_connect(connected_index);
+  LOG_INF("[%s] Auto-reconnecting...", s->data.name);
+  int err = connect_slot(s);
   if (err && err != -EALREADY) {
-    LOG_WRN("Reconnect failed: %d, retrying...", err);
-    k_work_schedule(&reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+    LOG_WRN("[%s] Reconnect failed: %d", s->data.name, err);
+    k_work_schedule(&s->reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
   }
 }
 
@@ -215,29 +303,32 @@ static uint8_t notify_cb(struct bt_conn *conn,
                          struct bt_gatt_subscribe_params *params,
                          const void *data, uint16_t length)
 {
+  ARG_UNUSED(conn);
+
+  struct heater_slot *s =
+      CONTAINER_OF(params, struct heater_slot, sub_params);
+
   if (!data) {
-    LOG_WRN("Unsubscribed");
+    LOG_WRN("[%s] Unsubscribed", s->data.name);
     return BT_GATT_ITER_STOP;
   }
 
-  if (!active_protocol) {
+  if (!s->protocol) {
     return BT_GATT_ITER_CONTINUE;
   }
 
-  struct heater_data hdata = last_heater_data;
-  int ret = active_protocol->decode(data, length, &hdata);
+  struct heater_data hdata = s->data;
+  int ret = s->protocol->decode(data, length, &hdata);
 
   if (ret == 0) {
     hdata.connected = true;
     hdata.timestamp_us = k_ticks_to_us_ceil64(k_uptime_ticks());
-    if (connected_index >= 0 && connected_index < scan_count) {
-      strncpy(hdata.name, scan_results[connected_index].name,
-              sizeof(hdata.name) - 1);
-    }
-    last_heater_data = hdata;
-    zbus_chan_pub(&heater_data_chan, &hdata, K_MSEC(100));
+    /* protocol decoder may not set .name; ensure ours is preserved */
+    strncpy(hdata.name, s->data.name, sizeof(hdata.name) - 1);
+    s->data = hdata;
+    publish_heater_state();
   } else {
-    LOG_DBG("Decode failed: %d (len=%u)", ret, length);
+    LOG_DBG("[%s] Decode failed: %d (len=%u)", s->data.name, ret, length);
   }
 
   return BT_GATT_ITER_CONTINUE;
@@ -251,18 +342,21 @@ static uint8_t discover_cb(struct bt_conn *conn,
                            const struct bt_gatt_attr *attr,
                            struct bt_gatt_discover_params *params)
 {
+  struct heater_slot *s =
+      CONTAINER_OF(params, struct heater_slot, disc_params);
+
   if (!attr) {
     if (params->type == BT_GATT_DISCOVER_CHARACTERISTIC) {
-      if (write_handle != 0 && notify_handle != 0) {
-        LOG_INF("Discovery complete: write=%u notify=%u", write_handle,
-                notify_handle);
-        subscribe_notify();
+      if (s->write_handle != 0 && s->notify_handle != 0) {
+        LOG_INF("[%s] Discovery complete: write=%u notify=%u",
+                s->data.name, s->write_handle, s->notify_handle);
+        subscribe_notify(s);
       } else {
-        LOG_ERR("Missing handles: write=%u notify=%u", write_handle,
-                notify_handle);
+        LOG_ERR("[%s] Missing handles: write=%u notify=%u",
+                s->data.name, s->write_handle, s->notify_handle);
       }
     } else {
-      LOG_ERR("Service not found");
+      LOG_ERR("[%s] Service not found", s->data.name);
     }
     return BT_GATT_ITER_STOP;
   }
@@ -270,20 +364,19 @@ static uint8_t discover_cb(struct bt_conn *conn,
   if (params->type == BT_GATT_DISCOVER_PRIMARY) {
     struct bt_gatt_service_val *svc = attr->user_data;
 
-    svc_start_handle = attr->handle + 1;
-    svc_end_handle = svc->end_handle;
-    LOG_INF("Service found: handles %u-%u", svc_start_handle,
-            svc_end_handle);
+    s->svc_start_handle = attr->handle + 1;
+    s->svc_end_handle = svc->end_handle;
+    LOG_INF("[%s] Service found: handles %u-%u",
+            s->data.name, s->svc_start_handle, s->svc_end_handle);
 
     params->uuid = NULL;
-    params->start_handle = svc_start_handle;
-    params->end_handle = svc_end_handle;
+    params->start_handle = s->svc_start_handle;
+    params->end_handle = s->svc_end_handle;
     params->type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
     int err = bt_gatt_discover(conn, params);
-
     if (err) {
-      LOG_ERR("Char discovery failed: %d", err);
+      LOG_ERR("[%s] Char discovery failed: %d", s->data.name, err);
     }
     return BT_GATT_ITER_STOP;
   }
@@ -298,20 +391,22 @@ static uint8_t discover_cb(struct bt_conn *conn,
     uint16_t uuid_val = BT_UUID_16(chrc->uuid)->val;
     bool has_notify = (chrc->properties & BT_GATT_CHRC_NOTIFY) != 0;
 
-    if (uuid_val == active_protocol->write_char_uuid) {
-      write_handle = chrc->value_handle;
-      LOG_INF("Write char 0x%04x: handle=%u", uuid_val, write_handle);
+    if (uuid_val == s->protocol->write_char_uuid) {
+      s->write_handle = chrc->value_handle;
+      LOG_INF("[%s] Write char 0x%04x: handle=%u",
+              s->data.name, uuid_val, s->write_handle);
     }
 
-    if (active_protocol->notify_char_uuid != 0) {
-      if (uuid_val == active_protocol->notify_char_uuid && has_notify) {
-        notify_handle = chrc->value_handle;
-        LOG_INF("Notify char 0x%04x: handle=%u", uuid_val, notify_handle);
+    if (s->protocol->notify_char_uuid != 0) {
+      if (uuid_val == s->protocol->notify_char_uuid && has_notify) {
+        s->notify_handle = chrc->value_handle;
+        LOG_INF("[%s] Notify char 0x%04x: handle=%u",
+                s->data.name, uuid_val, s->notify_handle);
       }
-    } else if (has_notify && notify_handle == 0) {
-      notify_handle = chrc->value_handle;
-      LOG_INF("Notify char (auto) 0x%04x: handle=%u", uuid_val,
-              notify_handle);
+    } else if (has_notify && s->notify_handle == 0) {
+      s->notify_handle = chrc->value_handle;
+      LOG_INF("[%s] Notify char (auto) 0x%04x: handle=%u",
+              s->data.name, uuid_val, s->notify_handle);
     }
 
     return BT_GATT_ITER_CONTINUE;
@@ -320,55 +415,51 @@ static uint8_t discover_cb(struct bt_conn *conn,
   return BT_GATT_ITER_STOP;
 }
 
-static void start_discovery(void)
+static void start_discovery(struct heater_slot *s)
 {
-  write_handle = 0;
-  notify_handle = 0;
+  s->write_handle = 0;
+  s->notify_handle = 0;
 
-  disc_uuid.uuid.type = BT_UUID_TYPE_16;
-  disc_uuid.val = active_protocol->service_uuid;
+  s->disc_uuid.uuid.type = BT_UUID_TYPE_16;
+  s->disc_uuid.val = s->protocol->service_uuid;
 
-  disc_params.uuid = &disc_uuid.uuid;
-  disc_params.func = discover_cb;
-  disc_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
-  disc_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
-  disc_params.type = BT_GATT_DISCOVER_PRIMARY;
+  s->disc_params.uuid = &s->disc_uuid.uuid;
+  s->disc_params.func = discover_cb;
+  s->disc_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
+  s->disc_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
+  s->disc_params.type = BT_GATT_DISCOVER_PRIMARY;
 
-  int err = bt_gatt_discover(heater_conn, &disc_params);
-
+  int err = bt_gatt_discover(s->conn, &s->disc_params);
   if (err) {
-    LOG_ERR("Discovery start failed: %d", err);
+    LOG_ERR("[%s] Discovery start failed: %d", s->data.name, err);
   }
 }
 
-static void subscribe_notify(void)
+static void subscribe_notify(struct heater_slot *s)
 {
-  sub_params.notify = notify_cb;
-  sub_params.value = BT_GATT_CCC_NOTIFY;
-  sub_params.value_handle = notify_handle;
-  sub_params.ccc_handle = 0;
+  s->sub_params.notify = notify_cb;
+  s->sub_params.value = BT_GATT_CCC_NOTIFY;
+  s->sub_params.value_handle = s->notify_handle;
+  s->sub_params.ccc_handle = 0;
 #if defined(CONFIG_BT_GATT_AUTO_DISCOVER_CCC)
-  sub_params.end_handle = svc_end_handle;
-  sub_params.disc_params = &ccc_disc_params;
+  s->sub_params.end_handle = s->svc_end_handle;
+  s->sub_params.disc_params = &s->ccc_disc_params;
 #endif
 
-  int err = bt_gatt_subscribe(heater_conn, &sub_params);
-
+  int err = bt_gatt_subscribe(s->conn, &s->sub_params);
   if (err && err != -EALREADY) {
-    LOG_ERR("Subscribe failed: %d", err);
+    LOG_ERR("[%s] Subscribe failed: %d", s->data.name, err);
     return;
   }
+  LOG_INF("[%s] Subscribed to notifications", s->data.name);
 
-  LOG_INF("Subscribed to notifications");
-  start_heartbeat();
+  k_work_schedule(&s->heartbeat_work, K_MSEC(100));
 
-  if (active_protocol && active_protocol->encode_query_auto_offsets &&
-      write_handle != 0) {
+  if (s->protocol->encode_query_auto_offsets && s->write_handle != 0) {
     uint8_t qbuf[16];
-    int qlen = active_protocol->encode_query_auto_offsets(qbuf, sizeof(qbuf));
+    int qlen = s->protocol->encode_query_auto_offsets(qbuf, sizeof(qbuf));
     if (qlen > 0) {
-      bt_gatt_write_without_response(heater_conn, write_handle,
-                                     qbuf, qlen, false);
+      bt_gatt_write_without_response(s->conn, s->write_handle, qbuf, qlen, false);
     }
   }
 }
@@ -379,45 +470,63 @@ static void subscribe_notify(void)
 
 static void connected_cb(struct bt_conn *conn, uint8_t err)
 {
-  if (conn != heater_conn) {
+  struct heater_slot *s = slot_for_conn(conn);
+  if (!s) {
     return;
   }
 
   if (err) {
-    LOG_ERR("Connect failed: %u", err);
-    bt_conn_unref(heater_conn);
-    heater_conn = NULL;
-    if (auto_reconnect && connected_index >= 0) {
-      k_work_schedule(&reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+    LOG_ERR("[%s] Connect failed: %u", s->data.name, err);
+    bt_conn_unref(s->conn);
+    s->conn = NULL;
+    s->data.connected = false;
+    publish_heater_state();
+    if (s->auto_reconnect) {
+      k_work_schedule(&s->reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+    } else {
+      release_slot(s);
+      publish_heater_state();
     }
     return;
   }
 
-  LOG_INF("Connected to heater (%s protocol)", active_protocol->name);
-  start_discovery();
+  LOG_INF("[%s] Connected (%s)", s->data.name, s->protocol->name);
+  s->data.connected = true;
+  publish_heater_state();
+  start_discovery(s);
 }
 
 static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 {
-  if (conn != heater_conn) {
+  struct heater_slot *s = slot_for_conn(conn);
+  if (!s) {
     return;
   }
 
-  LOG_INF("Disconnected: reason %u", reason);
-  stop_heartbeat();
-  bt_conn_unref(heater_conn);
-  heater_conn = NULL;
-  write_handle = 0;
-  notify_handle = 0;
+  LOG_INF("[%s] Disconnected: reason %u", s->data.name, reason);
+  k_work_cancel_delayable(&s->heartbeat_work);
 
-  struct heater_data hdata = {.connected = false};
-  zbus_chan_pub(&heater_data_chan, &hdata, K_MSEC(100));
-  publish_devices();
+  bt_conn_unref(s->conn);
+  s->conn = NULL;
+  s->write_handle = 0;
+  s->notify_handle = 0;
+  s->data.connected = false;
 
-  if (auto_reconnect && connected_index >= 0) {
-    LOG_INF("Will reconnect in %d ms", RECONNECT_DELAY_MS);
-    k_work_schedule(&reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
+  /* Clear transient telemetry but keep .name so reconnect can identify us */
+  char saved_name[32];
+  strncpy(saved_name, s->data.name, sizeof(saved_name));
+  saved_name[sizeof(saved_name) - 1] = '\0';
+  memset(&s->data, 0, sizeof(s->data));
+  strncpy(s->data.name, saved_name, sizeof(s->data.name) - 1);
+
+  if (s->auto_reconnect) {
+    publish_heater_state();
+    LOG_INF("[%s] Will reconnect in %d ms", s->data.name, RECONNECT_DELAY_MS);
+    k_work_schedule(&s->reconnect_work, K_MSEC(RECONNECT_DELAY_MS));
   } else {
+    release_slot(s);
+    publish_heater_state();
+    publish_devices();
     schedule_rescan();
   }
 }
@@ -450,7 +559,6 @@ static const struct heater_protocol *detect_protocol(const char *name)
   if (forced_protocol) {
     return forced_protocol;
   }
-
   for (int i = 0; i < NUM_PROTOCOLS; i++) {
     if (protocols[i]->match(name)) {
       return protocols[i];
@@ -470,7 +578,6 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
   }
 
   const struct heater_protocol *proto = detect_protocol(name);
-
   if (!proto && !forced_protocol) {
     return;
   }
@@ -480,7 +587,6 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
       return;
     }
   }
-
   if (scan_count >= MAX_SCAN_RESULTS) {
     return;
   }
@@ -493,7 +599,6 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
   r->protocol = proto;
 
   char addr_str[BT_ADDR_LE_STR_LEN];
-
   bt_addr_le_to_str(addr, addr_str, sizeof(addr_str));
   LOG_INF("[%d] %s \"%s\" RSSI %d (%s)", scan_count - 1, addr_str, name,
           rssi, proto ? proto->name : "unknown");
@@ -512,16 +617,15 @@ static K_WORK_DELAYABLE_DEFINE(rescan_work, rescan_handler);
 
 static void schedule_rescan(void)
 {
-  if (!heater_conn) {
-    k_work_schedule(&rescan_work, K_SECONDS(RESCAN_INTERVAL_SEC));
-  }
+  /* Rescan periodically regardless of currently-connected slots —
+   * new heaters that come into range should be auto-connected too. */
+  k_work_schedule(&rescan_work, K_SECONDS(RESCAN_INTERVAL_SEC));
 }
 
 static void rescan_handler(struct k_work *work)
 {
   ARG_UNUSED(work);
-
-  if (heater_conn || scanning) {
+  if (scanning) {
     return;
   }
   heater_ble_scan(5);
@@ -530,18 +634,26 @@ static void rescan_handler(struct k_work *work)
 static void scan_timeout_handler(struct k_work *work)
 {
   ARG_UNUSED(work);
+  if (!scanning) {
+    return;
+  }
+  bt_le_scan_stop();
+  scanning = false;
+  LOG_INF("Scan complete: %d device(s) found", scan_count);
+  publish_devices();
 
-  if (scanning) {
-    bt_le_scan_stop();
-    scanning = false;
-    LOG_INF("Scan complete: %d device(s) found", scan_count);
-    publish_devices();
-    if (!heater_conn && scan_count > 0) {
-      heater_ble_connect(0);
-    } else {
-      schedule_rescan();
+  /* Auto-connect to every heater in range that isn't already in a
+   * slot. heater_ble_connect() short-circuits with -EALREADY when
+   * the address is already managed and -ENOSPC when slots are full;
+   * both are non-fatal here. */
+  for (int i = 0; i < scan_count; i++) {
+    int err = heater_ble_connect(i);
+    if (err && err != -EALREADY && err != -ENOSPC) {
+      LOG_WRN("Auto-connect to [%d] %s failed: %d",
+              i, scan_results[i].name, err);
     }
   }
+  schedule_rescan();
 }
 
 //////////////////////////////////////////////////////////////
@@ -556,20 +668,21 @@ int heater_ble_init(void)
     return 0;
   }
 
-  int err = bt_enable(NULL);
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    k_work_init_delayable(&slots[i].heartbeat_work, heartbeat_handler);
+    k_work_init_delayable(&slots[i].reconnect_work, reconnect_handler);
+    k_work_init_delayable(&slots[i].offset_query_work, offset_query_handler);
+  }
 
+  int err = bt_enable(NULL);
   if (err) {
     LOG_ERR("BT enable failed: %d", err);
     return err;
   }
-
   bt_ready = true;
   LOG_INF("Bluetooth initialized");
 
-  /* Kick off periodic RSSI sampling. The handler reschedules itself
-   * so it keeps running for the lifetime of the system. */
   k_work_reschedule(&radio_publish_work, K_MSEC(RADIO_PUBLISH_INTERVAL_MS));
-
   return 0;
 }
 
@@ -581,7 +694,6 @@ int heater_ble_scan(int timeout_sec)
       return err;
     }
   }
-
   if (scanning) {
     return -EALREADY;
   }
@@ -589,12 +701,10 @@ int heater_ble_scan(int timeout_sec)
   scan_count = 0;
 
   int err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, scan_cb);
-
   if (err) {
     LOG_ERR("Scan start failed: %d", err);
     return err;
   }
-
   scanning = true;
   k_work_schedule(&scan_timeout_work, K_SECONDS(timeout_sec));
   LOG_INF("Scanning for %d seconds...", timeout_sec);
@@ -606,7 +716,6 @@ int heater_ble_scan_stop(void)
   if (!scanning) {
     return 0;
   }
-
   k_work_cancel_delayable(&scan_timeout_work);
   bt_le_scan_stop();
   scanning = false;
@@ -615,12 +724,24 @@ int heater_ble_scan_stop(void)
   return 0;
 }
 
-int heater_ble_connect(int index)
+static int connect_slot(struct heater_slot *s)
 {
-  if (heater_conn) {
+  if (s->conn) {
     return -EALREADY;
   }
+  int err = bt_conn_le_create(&s->addr, BT_CONN_LE_CREATE_CONN,
+                              BT_LE_CONN_PARAM_DEFAULT, &s->conn);
+  if (err) {
+    LOG_ERR("[%s] Connect failed: %d", s->data.name, err);
+    s->conn = NULL;
+    return err;
+  }
+  LOG_INF("[%s] Connecting (%s)...", s->data.name, s->protocol->name);
+  return 0;
+}
 
+int heater_ble_connect(int index)
+{
   if (index < 0 || index >= scan_count) {
     return -EINVAL;
   }
@@ -632,31 +753,58 @@ int heater_ble_connect(int index)
 
   struct ble_scan_result *r = &scan_results[index];
 
-  active_protocol = r->protocol;
-  if (!active_protocol && forced_protocol) {
-    active_protocol = forced_protocol;
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (slots[i].active && bt_addr_le_cmp(&slots[i].addr, &r->addr) == 0) {
+      return -EALREADY;
+    }
   }
-  if (!active_protocol) {
+
+  const struct heater_protocol *proto = r->protocol;
+  if (!proto && forced_protocol) {
+    proto = forced_protocol;
+  }
+  if (!proto) {
     return -ENOTSUP;
   }
 
-  int err = bt_conn_le_create(&r->addr, BT_CONN_LE_CREATE_CONN,
-                              BT_LE_CONN_PARAM_DEFAULT, &heater_conn);
+  struct heater_slot *s = find_free_slot();
+  if (!s) {
+    LOG_WRN("No free slot for new heater");
+    return -ENOSPC;
+  }
+
+  s->active = true;
+  s->protocol = proto;
+  bt_addr_le_copy(&s->addr, &r->addr);
+  memset(&s->data, 0, sizeof(s->data));
+  strncpy(s->data.name, r->name, sizeof(s->data.name) - 1);
+  s->auto_reconnect = true;
+
+  int err = connect_slot(s);
   if (err) {
-    LOG_ERR("Connect failed: %d", err);
-    heater_conn = NULL;
+    release_slot(s);
     schedule_rescan();
     return err;
   }
-
-  connected_index = index;
-  auto_reconnect = true;
   publish_devices();
-
-  LOG_INF("Connecting to %s (%s)...", r->name, active_protocol->name);
+  publish_heater_state();
   return 0;
 }
 
+int heater_ble_disconnect(const char *name)
+{
+  struct heater_slot *s = slot_for_name(name);
+  if (!s) {
+    return -ENOENT;
+  }
+  s->auto_reconnect = false;
+  if (s->conn) {
+    return bt_conn_disconnect(s->conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+  }
+  release_slot(s);
+  publish_heater_state();
+  return 0;
+}
 
 void heater_ble_set_protocol(const struct heater_protocol *proto)
 {
@@ -665,12 +813,22 @@ void heater_ble_set_protocol(const struct heater_protocol *proto)
 
 const struct heater_protocol *heater_ble_get_protocol(void)
 {
-  return active_protocol;
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (slots[i].active && slots[i].protocol) {
+      return slots[i].protocol;
+    }
+  }
+  return NULL;
 }
 
 bool heater_ble_is_connected(void)
 {
-  return heater_conn != NULL;
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (slots[i].conn != NULL) {
+      return true;
+    }
+  }
+  return false;
 }
 
 int heater_ble_get_scan_count(void)
@@ -693,18 +851,14 @@ bool heater_ble_is_scanning(void)
 
 int heater_ble_get_connected_index(void)
 {
-  if (!heater_conn) {
-    return -1;
-  }
-
-  struct bt_conn_info info;
-  if (bt_conn_get_info(heater_conn, &info) < 0) {
-    return -1;
-  }
-
-  for (int i = 0; i < scan_count; i++) {
-    if (bt_addr_le_cmp(&scan_results[i].addr, info.le.dst) == 0) {
-      return i;
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (!slots[i].conn) {
+      continue;
+    }
+    for (int j = 0; j < scan_count; j++) {
+      if (bt_addr_le_cmp(&scan_results[j].addr, &slots[i].addr) == 0) {
+        return j;
+      }
     }
   }
   return -1;
@@ -712,62 +866,88 @@ int heater_ble_get_connected_index(void)
 
 const char *heater_ble_get_connected_name(void)
 {
-  int idx = heater_ble_get_connected_index();
-  if (idx < 0) {
-    return NULL;
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    if (slots[i].conn && slots[i].data.name[0] != '\0') {
+      return slots[i].data.name;
+    }
   }
-  return scan_results[idx].name;
+  return NULL;
 }
 
-/* Sample the heater connection's RSSI via HCI_Read_RSSI and publish
- * heater_data with the updated value. Since BLE link RSSI is a
- * per-heater attribute, it travels in heater_data alongside the
- * other heater telemetry — multi-heater support will naturally
- * extend this channel rather than a shared radio struct. */
+//////////////////////////////////////////////////////////////
+// Radio (RSSI) Sampling
+//
+// Iterate active slots; for each connected one, sample link RSSI via
+// HCI_Read_RSSI and update cached telemetry. One publish per cycle
+// emits the full collection.
+//////////////////////////////////////////////////////////////
+
 static void radio_publish_handler(struct k_work *work)
 {
   ARG_UNUSED(work);
 
-  if (heater_conn) {
+  bool any_change = false;
+
+  for (int i = 0; i < HEATERS_MAX; i++) {
+    struct heater_slot *s = &slots[i];
+    if (!s->conn) {
+      continue;
+    }
     uint16_t handle;
-    if (bt_hci_get_conn_handle(heater_conn, &handle) == 0) {
-      struct net_buf *buf = bt_hci_cmd_alloc(K_FOREVER);
-      if (buf) {
-        struct bt_hci_cp_read_rssi *cp = net_buf_add(buf, sizeof(*cp));
-        cp->handle = sys_cpu_to_le16(handle);
-        struct net_buf *rsp = NULL;
-        if (bt_hci_cmd_send_sync(BT_HCI_OP_READ_RSSI, buf, &rsp) == 0 && rsp) {
-          struct bt_hci_rp_read_rssi *rp = (void *)rsp->data;
-          if (rp->status == 0) {
-            last_heater_data.ble_rssi_dbm = rp->rssi;
-            last_heater_data.timestamp_us =
-                k_ticks_to_us_ceil64(k_uptime_ticks());
-            zbus_chan_pub(&heater_data_chan, &last_heater_data, K_MSEC(50));
-          }
-          net_buf_unref(rsp);
-        }
+    if (bt_hci_get_conn_handle(s->conn, &handle) != 0) {
+      continue;
+    }
+    struct net_buf *buf = bt_hci_cmd_alloc(K_FOREVER);
+    if (!buf) {
+      continue;
+    }
+    struct bt_hci_cp_read_rssi *cp = net_buf_add(buf, sizeof(*cp));
+    cp->handle = sys_cpu_to_le16(handle);
+    struct net_buf *rsp = NULL;
+    if (bt_hci_cmd_send_sync(BT_HCI_OP_READ_RSSI, buf, &rsp) == 0 && rsp) {
+      struct bt_hci_rp_read_rssi *rp = (void *)rsp->data;
+      if (rp->status == 0) {
+        s->data.ble_rssi_dbm = rp->rssi;
+        s->data.timestamp_us = k_ticks_to_us_ceil64(k_uptime_ticks());
+        any_change = true;
       }
+      net_buf_unref(rsp);
     }
   }
 
+  if (any_change) {
+    publish_heater_state();
+  }
   k_work_reschedule(&radio_publish_work, K_MSEC(RADIO_PUBLISH_INTERVAL_MS));
 }
 
-int heater_ble_send_power(bool on)
+//////////////////////////////////////////////////////////////
+// Send Helpers (by target name)
+//////////////////////////////////////////////////////////////
+
+static int slot_write(struct heater_slot *s, const uint8_t *buf, int len)
 {
-  if (!heater_conn || !active_protocol || write_handle == 0) {
+  if (!s || !s->conn || s->write_handle == 0) {
+    return -ENOTCONN;
+  }
+  if (len <= 0) {
+    return -EINVAL;
+  }
+  return bt_gatt_write_without_response(s->conn, s->write_handle, buf, len, false);
+}
+
+int heater_ble_send_power(const char *target, bool on)
+{
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || !s->protocol || s->write_handle == 0) {
     return -ENOTCONN;
   }
 
-  /* The CC protocol's "power" command (0xA1) is a TOGGLE — it ignores
-   * the requested direction and just flips state. Sending it when the
-   * heater is already in the requested state would turn it on/off
-   * incorrectly. Guard here using the most recent telemetry: treat
-   * RUNNING and STARTING as "on", OFF and SHUTTING_DOWN as "off".
-   * Placing the guard in the zbus-driven send path means every caller
-   * (WS / HTTP API / shell) gets the protection for free. */
-  bool is_on = last_heater_data.power == HEATER_POWER_RUNNING ||
-               last_heater_data.power == HEATER_POWER_STARTING;
+  /* CC 0xA1 is a TOGGLE — it ignores the requested direction. Guard
+   * against redundant sends using the slot's cached telemetry. Treat
+   * RUNNING / STARTING as "on", OFF / SHUTTING_DOWN as "off". */
+  bool is_on = s->data.power == HEATER_POWER_RUNNING ||
+               s->data.power == HEATER_POWER_STARTING;
   if (on == is_on) {
     return 0;
   }
@@ -775,77 +955,103 @@ int heater_ble_send_power(bool on)
   uint8_t buf[16];
   int pkt_len;
 
-  if (!on && last_heater_data.mode == HEATER_MODE_FAN &&
-      active_protocol->encode_set_mode) {
-    /* CC fan mode needs its own toggle (0xA4) — the generic power
-       toggle (0xA1) would switch to heating instead of off. */
-    pkt_len = active_protocol->encode_set_mode(buf, sizeof(buf),
-                                               HEATER_MODE_FAN);
+  if (!on && s->data.mode == HEATER_MODE_FAN && s->protocol->encode_set_mode) {
+    /* CC fan mode needs 0xA4 — the generic toggle (0xA1) would switch
+       to heating instead of off. */
+    pkt_len = s->protocol->encode_set_mode(buf, sizeof(buf), HEATER_MODE_FAN);
   } else {
-    pkt_len = active_protocol->encode_power(buf, sizeof(buf), on);
+    pkt_len = s->protocol->encode_power(buf, sizeof(buf), on);
   }
-
-  if (pkt_len < 0) {
-    return pkt_len;
-  }
-  return bt_gatt_write_without_response(heater_conn, write_handle, buf,
-                                        pkt_len, false);
+  return slot_write(s, buf, pkt_len);
 }
 
-int heater_ble_send_set_temp(int temp_c)
+int heater_ble_send_set_temp(const char *target, int temp_c)
 {
-  if (!heater_conn || !active_protocol || write_handle == 0) {
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || !s->protocol || s->write_handle == 0) {
     return -ENOTCONN;
   }
-
   uint8_t buf[16];
-  int pkt_len = active_protocol->encode_set_temp(buf, sizeof(buf), temp_c);
-
-  if (pkt_len < 0) {
-    return pkt_len;
-  }
-  return bt_gatt_write_without_response(heater_conn, write_handle, buf,
-                                        pkt_len, false);
+  int pkt_len = s->protocol->encode_set_temp(buf, sizeof(buf), temp_c);
+  return slot_write(s, buf, pkt_len);
 }
 
-int heater_ble_send_adjust_power(int delta)
+int heater_ble_send_adjust_power(const char *target, int delta)
 {
-  if (!heater_conn || !active_protocol || write_handle == 0) {
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || !s->protocol || s->write_handle == 0) {
     return -ENOTCONN;
   }
-
-  if (!active_protocol->encode_adjust_power) {
+  if (!s->protocol->encode_adjust_power) {
     return -ENOTSUP;
   }
-
   uint8_t buf[16];
-  int pkt_len = active_protocol->encode_adjust_power(buf, sizeof(buf), delta);
-
-  if (pkt_len < 0) {
-    return pkt_len;
-  }
-  return bt_gatt_write_without_response(heater_conn, write_handle, buf,
-                                        pkt_len, false);
+  int pkt_len = s->protocol->encode_adjust_power(buf, sizeof(buf), delta);
+  return slot_write(s, buf, pkt_len);
 }
 
-int heater_ble_send_set_mode(enum heater_run_mode mode)
+int heater_ble_send_set_mode(const char *target, enum heater_run_mode mode)
 {
-  if (!heater_conn || !active_protocol || write_handle == 0) {
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || !s->protocol || s->write_handle == 0) {
     return -ENOTCONN;
   }
-
-  if (!active_protocol->encode_set_mode) {
+  if (!s->protocol->encode_set_mode) {
     return -ENOTSUP;
   }
-
   uint8_t buf[16];
-  int pkt_len = active_protocol->encode_set_mode(buf, sizeof(buf), mode);
+  int pkt_len = s->protocol->encode_set_mode(buf, sizeof(buf), mode);
+  return slot_write(s, buf, pkt_len);
+}
 
-  if (pkt_len < 0) {
-    return pkt_len;
+int heater_ble_send_altitude(const char *target)
+{
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || !s->protocol || s->write_handle == 0 ||
+      !s->protocol->encode_altitude) {
+    return -ENOTCONN;
   }
-  return bt_gatt_write_without_response(heater_conn, write_handle, buf,
-                                        pkt_len, false);
+  uint8_t buf[16];
+  int pkt_len = s->protocol->encode_altitude(buf, sizeof(buf));
+  return slot_write(s, buf, pkt_len);
+}
+
+int heater_ble_send_set_auto_offsets(const char *target, int startup, int shutdown)
+{
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || !s->protocol || s->write_handle == 0 ||
+      !s->protocol->encode_set_auto_offsets) {
+    return -ENOTCONN;
+  }
+  uint8_t buf[16];
+  int pkt_len = s->protocol->encode_set_auto_offsets(buf, sizeof(buf),
+                                                     startup, shutdown);
+  int ret = slot_write(s, buf, pkt_len);
+  if (ret == 0) {
+    k_work_schedule(&s->offset_query_work, K_MSEC(500));
+  }
+  return ret;
+}
+
+int heater_ble_send_query_auto_offsets(const char *target)
+{
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || !s->protocol || s->write_handle == 0 ||
+      !s->protocol->encode_query_auto_offsets) {
+    return -ENOTCONN;
+  }
+  uint8_t buf[16];
+  int pkt_len = s->protocol->encode_query_auto_offsets(buf, sizeof(buf));
+  return slot_write(s, buf, pkt_len);
+}
+
+int heater_ble_send_raw(const char *target, const uint8_t *data, uint8_t len)
+{
+  struct heater_slot *s = slot_for_name(target);
+  if (!s || !s->conn || s->write_handle == 0) {
+    return -ENOTCONN;
+  }
+  return slot_write(s, data, len);
 }
 
 //////////////////////////////////////////////////////////////
@@ -866,60 +1072,34 @@ static void heater_cmd_callback(const struct zbus_channel *chan)
   case HEATER_CMD_CONNECT:
     heater_ble_connect(cmd->connect_index);
     break;
+  case HEATER_CMD_DISCONNECT:
+    heater_ble_disconnect(cmd->target_name);
+    break;
   case HEATER_CMD_POWER:
-    heater_ble_send_power(cmd->power_on);
+    heater_ble_send_power(cmd->target_name, cmd->power_on);
     break;
   case HEATER_CMD_SET_MODE:
-    heater_ble_send_set_mode(cmd->mode);
+    heater_ble_send_set_mode(cmd->target_name, cmd->mode);
     break;
   case HEATER_CMD_SET_TEMP:
-    heater_ble_send_set_temp(cmd->temp);
+    heater_ble_send_set_temp(cmd->target_name, cmd->temp);
     break;
   case HEATER_CMD_ADJUST_POWER:
-    heater_ble_send_adjust_power(cmd->power_delta);
+    heater_ble_send_adjust_power(cmd->target_name, cmd->power_delta);
     break;
   case HEATER_CMD_ALTITUDE:
-    if (heater_conn && active_protocol && active_protocol->encode_altitude &&
-        write_handle != 0) {
-      uint8_t abuf[16];
-      int alen = active_protocol->encode_altitude(abuf, sizeof(abuf));
-      if (alen > 0) {
-        bt_gatt_write_without_response(heater_conn, write_handle,
-                                       abuf, alen, false);
-      }
-    }
+    heater_ble_send_altitude(cmd->target_name);
     break;
   case HEATER_CMD_SET_AUTO_OFFSETS:
-    if (heater_conn && active_protocol &&
-        active_protocol->encode_set_auto_offsets && write_handle != 0) {
-      uint8_t obuf[16];
-      int olen = active_protocol->encode_set_auto_offsets(
-          obuf, sizeof(obuf), cmd->auto_offsets.startup,
-          cmd->auto_offsets.shutdown);
-      if (olen > 0) {
-        bt_gatt_write_without_response(heater_conn, write_handle,
-                                       obuf, olen, false);
-        k_work_schedule(&offset_query_work, K_MSEC(500));
-      }
-    }
+    heater_ble_send_set_auto_offsets(cmd->target_name,
+                                     cmd->auto_offsets.startup,
+                                     cmd->auto_offsets.shutdown);
     break;
   case HEATER_CMD_QUERY_AUTO_OFFSETS:
-    if (heater_conn && active_protocol &&
-        active_protocol->encode_query_auto_offsets && write_handle != 0) {
-      uint8_t obuf[16];
-      int olen = active_protocol->encode_query_auto_offsets(
-          obuf, sizeof(obuf));
-      if (olen > 0) {
-        bt_gatt_write_without_response(heater_conn, write_handle,
-                                       obuf, olen, false);
-      }
-    }
+    heater_ble_send_query_auto_offsets(cmd->target_name);
     break;
   case HEATER_CMD_RAW:
-    if (heater_conn && write_handle != 0 && cmd->raw.len > 0) {
-      bt_gatt_write_without_response(heater_conn, write_handle,
-                                     cmd->raw.data, cmd->raw.len, false);
-    }
+    heater_ble_send_raw(cmd->target_name, cmd->raw.data, cmd->raw.len);
     break;
   }
 }

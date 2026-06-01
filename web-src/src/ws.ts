@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onCleanup } from 'solid-js';
+import { createSignal, onCleanup } from 'solid-js';
 
 export type DamperMsg = {
   type: 'damper';
@@ -12,9 +12,9 @@ export type DamperMsg = {
   cool_hysteresis: number;
   heater_name: string | null;
 };
-export type HeaterMsg = {
-  type: 'heater';
-  name: string | null;
+
+export type HeaterState = {
+  name: string;
   power: string;
   step: string;
   mode: string;
@@ -27,18 +27,35 @@ export type HeaterMsg = {
   altitude_mode: boolean;
   startup_offset: number;
   shutdown_offset: number;
+  ble_rssi_dbm: number;
   connected: boolean;
 };
-export type HeaterDevice = { name: string; rssi: number; protocol: string };
-export type HeatersMsg = { type: 'heaters'; connected: number; devices: HeaterDevice[] };
+
+export type HeaterStatesMsg = { type: 'heater_states'; heaters: HeaterState[] };
+
+export type HeaterDevice = {
+  name: string;
+  rssi: number;
+  protocol: string;
+  connected: boolean;
+};
+export type HeatersMsg = { type: 'heaters'; devices: HeaterDevice[] };
+
 export type ResultMsg = { type: 'result'; ok: boolean; error?: string };
+
 export type HeaterPendingMsg = {
   type: 'heater.pending';
+  target: string;
   field: 'power' | 'mode' | 'altitude' | 'power_level' | 'auto_offsets';
   value?: boolean | string;
 };
 
-export type WsMessage = DamperMsg | HeaterMsg | HeatersMsg | ResultMsg | HeaterPendingMsg;
+export type WsMessage =
+  | DamperMsg
+  | HeaterStatesMsg
+  | HeatersMsg
+  | ResultMsg
+  | HeaterPendingMsg;
 
 export type HeaterPending = {
   field: HeaterPendingMsg['field'];
@@ -55,30 +72,46 @@ export type HeaterPending = {
 export function createWs() {
   const [connected, setConnected] = createSignal(false);
   const [damper, setDamper] = createSignal<DamperMsg | null>(null);
-  const [heater, setHeater] = createSignal<HeaterMsg | null>(null);
-  const [heaters, setHeaters] = createSignal<HeatersMsg | null>(null);
+  /* `heaters` is the per-name map of connected/managed heaters.
+   * `devices` is the latest scan result list. */
+  const [heaters, setHeaters] = createSignal<Record<string, HeaterState>>({});
+  const [devices, setDevices] = createSignal<HeaterDevice[]>([]);
   const [lastResult, setLastResult] = createSignal<ResultMsg | null>(null);
-  /* `pending` reflects a heater command that's been dispatched but
-   * whose effect hasn't yet shown up in telemetry. Set on incoming
-   * `heater.pending` (broadcast by firmware to every WS client),
-   * cleared either when matching telemetry arrives or after a 3s
-   * safety timeout. UI uses this to render a spinner on the button
-   * being waited on, in sync across all connected clients. */
-  const [pending, setPending] = createSignal<HeaterPending | null>(null);
+  /* `pendingByName` reflects per-heater commands dispatched but not
+   * yet confirmed by telemetry. Each heater can have its own pending
+   * operation in flight, so the index is the heater's name. */
+  const [pendingByName, setPendingByName] = createSignal<
+    Record<string, HeaterPending>
+  >({});
   const PENDING_TIMEOUT_MS = 3000;
-  let pendingTimeoutTimer: number | undefined;
+  const pendingTimers: Record<string, number> = {};
 
-  const armPending = (p: HeaterPending) => {
-    if (pendingTimeoutTimer) clearTimeout(pendingTimeoutTimer);
-    setPending(p);
-    pendingTimeoutTimer = window.setTimeout(() => setPending(null), PENDING_TIMEOUT_MS);
+  const armPending = (target: string, p: HeaterPending) => {
+    const existing = pendingTimers[target];
+    if (existing) clearTimeout(existing);
+    setPendingByName(prev => ({ ...prev, [target]: p }));
+    pendingTimers[target] = window.setTimeout(() => {
+      delete pendingTimers[target];
+      setPendingByName(prev => {
+        const next = { ...prev };
+        delete next[target];
+        return next;
+      });
+    }, PENDING_TIMEOUT_MS);
   };
-  const clearPending = () => {
-    if (pendingTimeoutTimer) {
-      clearTimeout(pendingTimeoutTimer);
-      pendingTimeoutTimer = undefined;
+
+  const clearPending = (target: string) => {
+    const t = pendingTimers[target];
+    if (t) {
+      clearTimeout(t);
+      delete pendingTimers[target];
     }
-    setPending(null);
+    setPendingByName(prev => {
+      if (!prev[target]) return prev;
+      const next = { ...prev };
+      delete next[target];
+      return next;
+    });
   };
 
   let ws: WebSocket | null = null;
@@ -114,6 +147,28 @@ export function createWs() {
     }, 1000);
   }
 
+  function checkPendingResolved(h: HeaterState) {
+    const p = pendingByName()[h.name];
+    if (!p) return;
+    let done = false;
+    if (p.field === 'power') {
+      done = (p.value === true && h.power === 'RUNNING') ||
+             (p.value === true && h.power === 'STARTING') ||
+             (p.value === false && h.power === 'OFF') ||
+             (p.value === false && h.power === 'SHUTTING_DOWN');
+    } else if (p.field === 'mode') {
+      done = h.mode === p.value;
+    } else if (p.field === 'altitude') {
+      done = h.altitude_mode !== p.before;
+    } else if (p.field === 'power_level') {
+      done = h.power_level !== p.before;
+    } else if (p.field === 'auto_offsets') {
+      done = h.startup_offset !== p.before ||
+             h.shutdown_offset !== p.beforeShutdown;
+    }
+    if (done) clearPending(h.name);
+  }
+
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/api/ws`);
@@ -130,35 +185,27 @@ export function createWs() {
         case 'damper':
           setDamper(msg);
           break;
-        case 'heater': {
-          setHeater(msg);
-          /* Early-clear pending when telemetry confirms the change. */
-          const p = pending();
-          if (p) {
-            let done = false;
-            if (p.field === 'power') {
-              done = (p.value === true && msg.power === 'ON') ||
-                     (p.value === false && msg.power === 'OFF');
-            } else if (p.field === 'mode') {
-              done = msg.mode === p.value;
-            } else if (p.field === 'altitude') {
-              done = msg.altitude_mode !== p.before;
-            } else if (p.field === 'power_level') {
-              done = msg.power_level !== p.before;
-            } else if (p.field === 'auto_offsets') {
-              done = msg.startup_offset !== p.before ||
-                     msg.shutdown_offset !== p.beforeShutdown;
-            }
-            if (done) clearPending();
+        case 'heater_states': {
+          const map: Record<string, HeaterState> = {};
+          for (const h of msg.heaters) {
+            map[h.name] = h;
+          }
+          setHeaters(map);
+          for (const h of msg.heaters) {
+            checkPendingResolved(h);
+          }
+          /* Drop pending entries for heaters that disappeared. */
+          for (const name of Object.keys(pendingByName())) {
+            if (!map[name]) clearPending(name);
           }
           break;
         }
         case 'heaters':
-          setHeaters(msg as HeatersMsg);
+          setDevices(msg.devices);
           break;
         case 'heater.pending': {
-          const h = heater();
-          armPending({
+          const h = heaters()[msg.target];
+          armPending(msg.target, {
             field: msg.field,
             value: msg.value,
             before: msg.field === 'altitude' ? h?.altitude_mode :
@@ -203,5 +250,14 @@ export function createWs() {
     send(msg);
   }
 
-  return { connected, damper, heater, heaters, lastResult, pending, send, sendCmd };
+  return {
+    connected,
+    damper,
+    heaters,
+    devices,
+    lastResult,
+    pendingByName,
+    send,
+    sendCmd,
+  };
 }

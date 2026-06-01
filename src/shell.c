@@ -309,8 +309,16 @@ static int cmd_ble_status(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
 
-  struct heater_data hdata;
-  zbus_chan_read(&heater_data_chan, &hdata, K_NO_WAIT);
+  struct heater_states states;
+  zbus_chan_read(&heater_states_chan, &states, K_NO_WAIT);
+
+  struct heater_data hdata = {0};
+  for (int i = 0; i < states.count && i < HEATERS_MAX; i++) {
+    if (states.heaters[i].connected) {
+      hdata = states.heaters[i];
+      break;
+    }
+  }
 
   struct heater_devices devs;
   zbus_chan_read(&heater_devices_chan, &devs, K_NO_WAIT);

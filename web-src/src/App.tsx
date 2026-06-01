@@ -1,20 +1,17 @@
-import { Show, For, createSignal, createEffect } from 'solid-js';
+import { Show, For, createSignal, createEffect, createMemo } from 'solid-js';
 import '@voidable/ui';
-import { createWs, type HeaterDevice } from './ws';
+import { createWs, type HeaterState } from './ws';
 
 export default function App() {
-  const { connected, damper, heater, heaters, lastResult, pending, send, sendCmd } = createWs();
-  const isPending = (field: string, value?: boolean | string) => {
-    const p = pending();
-    if (!p || p.field !== field) return false;
-    if (value === undefined) return true;
-    return p.value === value;
-  };
+  const {
+    connected, damper, heaters, devices,
+    pendingByName, send, sendCmd,
+  } = createWs();
+
   const [sliding, setSliding] = createSignal(false);
   const [localAngle, setLocalAngle] = createSignal(0);
   const [damperTab, setDamperTab] = createSignal<'control' | 'config'>('control');
   const [selectedName, setSelectedName] = createSignal('');
-  const [knownDevices, setKnownDevices] = createSignal<HeaterDevice[]>([]);
   /** Manual-mode position limiter: when on, clamp angle to the
    *  [inside_angle, outside_angle] window. Browser-local state. */
   const [limitToRoute, setLimitToRoute] = createSignal(true);
@@ -33,7 +30,11 @@ export default function App() {
   /** void-select captures children once on connect, then moves them into
    *  its rendered native <select>. We sync options via the inner element
    *  so reactive changes propagate without remounting. */
-  const syncVoidSelect = (el: HTMLElement, options: Array<{value: string; label: string}>, selected: string) => {
+  const syncVoidSelect = (
+    el: HTMLElement,
+    options: Array<{value: string; label: string}>,
+    selected: string,
+  ) => {
     const sync = () => {
       const inner = el.querySelector('select') as HTMLSelectElement | null;
       if (!inner) return;
@@ -50,44 +51,61 @@ export default function App() {
     else queueMicrotask(sync);
   };
 
+  /** Union of every heater name we've ever seen — connected, scanned,
+   *  or historical. Used for the damper's "Heater ID" config select so
+   *  the user can bind the damper to a heater that isn't currently in
+   *  range. */
+  const [knownNames, setKnownNames] = createSignal<string[]>([]);
   createEffect(() => {
-    const hs = heaters();
-    if (!hs?.devices?.length) return;
-    setKnownDevices(prev => {
-      const known = new Map(prev.map(d => [d.name, d]));
-      for (const d of hs.devices) {
-        known.set(d.name, d);
-      }
-      return Array.from(known.values());
+    const fromDevices = devices().map(d => d.name);
+    const fromHeaters = Object.keys(heaters());
+    setKnownNames(prev => {
+      const set = new Set([...prev, ...fromDevices, ...fromHeaters]);
+      return Array.from(set);
     });
   });
 
+  /** Connected heaters sorted by name — the dropdown's option list.
+   *  The equality check returns the same array reference when the
+   *  set of names is unchanged across telemetry updates, so the
+   *  combobox doesn't re-render and close its popup. */
+  const connectedNames = createMemo(
+    () =>
+      Object.values(heaters())
+        .map(h => h.name)
+        .sort((a, b) => a.localeCompare(b)),
+    [],
+    {
+      equals: (a, b) =>
+        a.length === b.length && a.every((v, i) => v === b[i]),
+    },
+  );
+
+  /** Auto-select first connected heater whenever the current selection
+   *  isn't connected (or no selection yet). */
   createEffect(() => {
-    const h = heater();
-    if (h?.connected && h.name) {
-      setSelectedName(h.name);
+    const names = connectedNames();
+    const sel = selectedName();
+    if (!sel || !names.includes(sel)) {
+      setSelectedName(names[0] ?? '');
     }
   });
 
-  createEffect(() => {
-    const devices = knownDevices();
-    if (devices.length && !selectedName()) {
-      setSelectedName(devices[0].name);
-    }
-  });
+  /** The heater that the controls in the card body apply to. */
+  const selectedHeater = createMemo<HeaterState | undefined>(() =>
+    heaters()[selectedName()],
+  );
 
   createEffect(() => {
-    const devices = knownDevices();
+    const names = knownNames();
     const selected = damper()?.heater_name ?? '';
     if (!configHeaterSelectRef) return;
     syncVoidSelect(
       configHeaterSelectRef,
-      [{value: '', label: 'None'}, ...devices.map(d => ({value: d.name, label: d.name}))],
+      [{value: '', label: 'None'}, ...names.map(n => ({value: n, label: n}))],
       selected,
     );
   });
-
-  const heaterConnected = () => heater()?.connected && heater()!.name === selectedName();
 
   createEffect(() => {
     if (!sliding() && damper()) {
@@ -126,8 +144,11 @@ export default function App() {
       send({ type: 'damper.set', mode });
     }
   };
-  const heaterCmd = (cmd: Record<string, unknown>) =>
-    send({ type: 'heater.command', ...cmd });
+  const heaterCmd = (cmd: Record<string, unknown>) => {
+    const t = selectedName();
+    if (!t) return;
+    send({ type: 'heater.command', target: t, ...cmd });
+  };
   const heaterError = (code: number): string => {
     const errors: Record<number, string> = {
       2: 'Voltage fault', 3: 'Glow plug fault', 4: 'Fuel pump fault',
@@ -150,10 +171,18 @@ export default function App() {
     sendCmd({ type: 'damper.heater', name });
   };
 
+  /** Pending command tied to the currently-selected heater. */
+  const pendingForSelected = () => pendingByName()[selectedName()];
+  const isPending = (field: string, value?: boolean | string) => {
+    const p = pendingForSelected();
+    if (!p || p.field !== field) return false;
+    if (value === undefined) return true;
+    return p.value === value;
+  };
+
   const loadConfig = () => {
     send({ type: 'damper.status' });
     send({ type: 'heaters.list' });
-    send({ type: 'heater.status' });
   };
   createEffect(() => { if (connected()) loadConfig(); });
 
@@ -186,9 +215,6 @@ export default function App() {
             value={damperTab()}
             size="lg"
             on:void-change={(e: CustomEvent<{value: string}>) => {
-              /* void-change bubbles from every nested void-* component
-                 (slider, toggle-group, number-input, select). Only act on
-                 our own dispatch. */
               if ((e.target as HTMLElement).tagName !== 'VOID-TABS') return;
               setDamperTab(e.detail.value as 'control' | 'config');
             }}>
@@ -285,7 +311,7 @@ export default function App() {
                 </div>
                 <div class="control-group">
                   <div class="stat-label">Heater ID</div>
-                  <Show when={knownDevices().length} fallback={
+                  <Show when={knownNames().length} fallback={
                     <span class="config-empty">{damper()?.heater_name ?? 'none'}</span>
                   }>
                     <void-select
@@ -326,63 +352,60 @@ export default function App() {
         <section class="card">
           <div class="card-header">
             <span class="card-title">Heater</span>
-            <Show when={knownDevices().length ? knownDevices() : null} keyed>
-              {devices => (
-                <void-combobox
-                  size="lg"
-                  placeholder="Select heater"
-                  value={selectedName()}
-                  on:void-change={(e: CustomEvent<{value: string}>) =>
-                    setSelectedName(e.detail.value)}>
-                  <For each={devices}>
-                    {d => <void-option value={d.name}>{d.name} ({d.protocol})</void-option>}
-                  </For>
-                </void-combobox>
-              )}
+            <Show when={connectedNames().length}>
+              <void-combobox
+                size="lg"
+                placeholder="Select heater"
+                value={selectedName()}
+                on:void-change={(e: CustomEvent<{value: string}>) =>
+                  setSelectedName(e.detail.value)}>
+                <For each={connectedNames()}>
+                  {n => <void-option value={n}>{n}</void-option>}
+                </For>
+              </void-combobox>
             </Show>
           </div>
           <div class="card-body">
-            <Show when={selectedName()} fallback={
+            <Show when={selectedHeater()} fallback={
               <div class="stat-value heater-placeholder">
-                Searching for heaters...
+                Scanning for heaters...
               </div>
             }>
-              <Show when={heaterConnected() && heater()!.error}>
+              <Show when={selectedHeater()!.error}>
                 <void-alert color="error" variant="subtle">
-                  E{heater()!.error} — {heaterError(heater()!.error)}
+                  E{selectedHeater()!.error} — {heaterError(selectedHeater()!.error)}
                 </void-alert>
               </Show>
-              <Show when={heaterConnected()} fallback={
+              <Show when={!selectedHeater()!.connected}>
                 <void-alert color="default" variant="subtle">
-                  <void-badge color="error">Disconnected</void-badge>
-                  <span> {selectedName()}</span>
+                  Waiting for reconnect to {selectedHeater()!.name}...
                 </void-alert>
-              }>
-                <void-collapsible heading="Status">
-                  <div class="stat-grid">
-                    <void-stat size="sm" label="System" value={heater()!.power} />
-                    <void-stat size="sm" label="State" value={heater()!.step} />
-                    <void-stat size="sm" label="Core" value={`${heater()!.core_temp.toFixed(1)}°C`} />
-                    <void-stat size="sm" label="Ambient" value={`${heater()!.ambient_temp.toFixed(1)}°C`} />
-                    <void-stat size="sm" label="Voltage" value={`${heater()!.voltage.toFixed(1)}V`} />
-                  </div>
-                </void-collapsible>
               </Show>
+              <void-collapsible heading="Status">
+                <div class="stat-grid">
+                  <void-stat size="sm" label="System" value={selectedHeater()!.power} />
+                  <void-stat size="sm" label="State" value={selectedHeater()!.step} />
+                  <void-stat size="sm" label="Core" value={`${selectedHeater()!.core_temp.toFixed(1)}°C`} />
+                  <void-stat size="sm" label="Ambient" value={`${selectedHeater()!.ambient_temp.toFixed(1)}°C`} />
+                  <void-stat size="sm" label="Voltage" value={`${selectedHeater()!.voltage.toFixed(1)}V`} />
+                  <void-stat size="sm" label="RSSI" value={`${selectedHeater()!.ble_rssi_dbm} dBm`} />
+                </div>
+              </void-collapsible>
             </Show>
           </div>
-          <Show when={heaterConnected()}>
+          <Show when={selectedHeater()?.connected}>
             <div class="heater-controls">
               <div class="control-group">
                 <div class="stat-label">Power</div>
                 <div class="control-row">
-                  <void-button variant={heater()!.power === 'OFF' ? 'outline' : 'filled'}
+                  <void-button variant={selectedHeater()!.power === 'OFF' ? 'outline' : 'filled'}
                     size="lg" color="success"
                     onClick={() => setPower(true)}>
                     <Show when={isPending('power', true)} fallback="On">
                       <void-spinner size="sm" /> On
                     </Show>
                   </void-button>
-                  <void-button variant={heater()!.power === 'OFF' ? 'filled' : 'outline'}
+                  <void-button variant={selectedHeater()!.power === 'OFF' ? 'filled' : 'outline'}
                     size="lg" color="error"
                     onClick={() => setPower(false)}>
                     <Show when={isPending('power', false)} fallback="Off">
@@ -394,7 +417,7 @@ export default function App() {
               <div class="control-group">
                 <div class="stat-label">Mode</div>
                 <void-toggle-group
-                  value={heater()!.mode}
+                  value={selectedHeater()!.mode}
                   size="lg"
                   on:void-change={(e: CustomEvent<{value: string}>) => {
                     if (e.detail.value) setMode(e.detail.value);
@@ -406,29 +429,29 @@ export default function App() {
               </div>
               <div class="control-group">
                 <div class="stat-label">
-                  {heater()!.mode === 'automatic' ? 'Target Temp' : 'Power Level'}
+                  {selectedHeater()!.mode === 'automatic' ? 'Target Temp' : 'Power Level'}
                 </div>
                 <void-number-input
                   controls="sides"
                   size="lg"
-                  min={heater()!.mode === 'automatic' ? 8 : 1}
-                  max={heater()!.mode === 'automatic' ? 36 : 10}
+                  min={selectedHeater()!.mode === 'automatic' ? 8 : 1}
+                  max={selectedHeater()!.mode === 'automatic' ? 36 : 10}
                   step={1} precision={0}
-                  value={heater()!.power_level}
+                  value={selectedHeater()!.power_level}
                   on:void-change={(e: CustomEvent<{value: number; previous: number}>) =>
                     adjustPower(e.detail.value - e.detail.previous)}
                 />
               </div>
-              <Show when={heater()!.mode === 'automatic'}>
+              <Show when={selectedHeater()!.mode === 'automatic'}>
                 <div class="control-group">
                   <div class="stat-label">Min Temp</div>
                   <void-number-input
                     controls="sides"
                     size="sm"
                     min={3} max={10} step={1} precision={0}
-                    value={heater()!.startup_offset}
+                    value={selectedHeater()!.startup_offset}
                     on:void-change={(e: CustomEvent<{value: number}>) =>
-                      setAutoOffsets(e.detail.value, heater()!.shutdown_offset)}
+                      setAutoOffsets(e.detail.value, selectedHeater()!.shutdown_offset)}
                   />
                 </div>
                 <div class="control-group">
@@ -437,19 +460,19 @@ export default function App() {
                     controls="sides"
                     size="sm"
                     min={3} max={10} step={1} precision={0}
-                    value={heater()!.shutdown_offset}
+                    value={selectedHeater()!.shutdown_offset}
                     on:void-change={(e: CustomEvent<{value: number}>) =>
-                      setAutoOffsets(heater()!.startup_offset, e.detail.value)}
+                      setAutoOffsets(selectedHeater()!.startup_offset, e.detail.value)}
                   />
                 </div>
               </Show>
-              <Show when={heater()!.mode !== 'fan'}>
+              <Show when={selectedHeater()!.mode !== 'fan'}>
                 <div class="control-group">
                   <div class="stat-label">Altitude</div>
                   <void-button
-                    variant={heater()!.altitude_mode ? 'filled' : 'outline'}
+                    variant={selectedHeater()!.altitude_mode ? 'filled' : 'outline'}
                     size="lg"
-                    color={heater()!.altitude_mode ? 'caution' : 'default'}
+                    color={selectedHeater()!.altitude_mode ? 'caution' : 'default'}
                     onClick={toggleAltitude}>
                     <Show when={isPending('altitude')} fallback={
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -465,7 +488,6 @@ export default function App() {
             </div>
           </Show>
         </section>
-
       </main>
     </div>
   );
