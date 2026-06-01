@@ -58,13 +58,31 @@ jobs:
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
 
+      - name: Cache west workspace
+        if: steps.tag.outputs.new_tag != ''
+        id: cache-west
+        uses: actions/cache@v4
+        with:
+          # Cache everything west pulls in. Key is keyed on the manifest
+          # so any west.yml change invalidates.
+          path: |
+            zephyr
+            bootloader
+            modules
+            tools
+          key: west-${{ runner.os }}-${{ hashFiles('origin/west.yml') }}
+
       - name: West init + update
         if: steps.tag.outputs.new_tag != ''
         run: |
-          west init -l origin
-          west update
-          echo "=== west projects after update ==="
-          west list
+          if [ ! -d .west ]; then
+            west init -l origin
+          fi
+          if [ "${{ steps.cache-west.outputs.cache-hit }}" != "true" ]; then
+            west update
+          else
+            echo "Cache hit — skipping west update"
+          fi
           test -d modules/lib/zephyr-cyw43-bt || { echo "ERROR: zephyr-cyw43-bt not fetched"; exit 1; }
           test -d modules/drivers/zephyr-servo-rpi-pio || { echo "ERROR: zephyr-servo-rpi-pio not fetched"; exit 1; }
           pip install -r zephyr/scripts/requirements-base.txt
@@ -74,8 +92,16 @@ jobs:
         if: steps.tag.outputs.new_tag != ''
         run: west blobs fetch hal_infineon
 
-      - name: Install Zephyr SDK
+      - name: Cache Zephyr SDK
         if: steps.tag.outputs.new_tag != ''
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: zephyr-sdk-1.0.1
+          key: zephyr-sdk-1.0.1-arm-${{ runner.os }}
+
+      - name: Install Zephyr SDK
+        if: steps.tag.outputs.new_tag != '' && steps.cache-sdk.outputs.cache-hit != 'true'
         env:
           SDK_VERSION: 1.0.1
         run: |
@@ -92,6 +118,13 @@ jobs:
           mkdir -p apps/auto-damper/keys
           printf '%s\n' "$KEY" > apps/auto-damper/keys/root-ed25519.pem
           chmod 600 apps/auto-damper/keys/root-ed25519.pem
+
+      - name: Cache npm dependencies
+        if: steps.tag.outputs.new_tag != ''
+        uses: actions/cache@v4
+        with:
+          path: apps/auto-damper/web-src/node_modules
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/auto-damper/web-src/package-lock.json') }}
 
       - name: Build web UI
         if: steps.tag.outputs.new_tag != ''
