@@ -192,17 +192,21 @@ static int tls_open(const char *host, const char *port)
 
 /* Send a minimal HTTP/1.0 GET. HTTP/1.0 keeps things simple — server
  * closes the connection after the body which makes EOF the natural
- * "end of body" signal. */
+ * "end of body" signal. SLIT macro avoids manual byte counts on
+ * string literals (a 33-vs-34 off-by-one truncated the final \n on
+ * the original version and the server hung waiting for the rest of
+ * the header block). */
+#define SLIT(s) (s), (sizeof(s) - 1)
+
 static int send_get(int sock, const char *host, const char *path)
 {
   int rc;
-  rc = sendall(sock, "GET ", 4);                       if (rc) return rc;
-  rc = sendall(sock, path, strlen(path));              if (rc) return rc;
-  rc = sendall(sock, " HTTP/1.0\r\nHost: ", 17);       if (rc) return rc;
-  rc = sendall(sock, host, strlen(host));              if (rc) return rc;
-  rc = sendall(sock, "\r\nUser-Agent: auto-damper-ota/1\r\n", 33);
-  if (rc) return rc;
-  rc = sendall(sock, "Accept: */*\r\nConnection: close\r\n\r\n", 33);
+  rc = sendall(sock, SLIT("GET "));                          if (rc) return rc;
+  rc = sendall(sock, path, strlen(path));                    if (rc) return rc;
+  rc = sendall(sock, SLIT(" HTTP/1.0\r\nHost: "));           if (rc) return rc;
+  rc = sendall(sock, host, strlen(host));                    if (rc) return rc;
+  rc = sendall(sock, SLIT("\r\nUser-Agent: auto-damper-ota/1\r\n"
+                          "Accept: */*\r\nConnection: close\r\n\r\n"));
   return rc;
 }
 
