@@ -28,7 +28,11 @@ LOG_MODULE_REGISTER(ota, LOG_LEVEL_INF);
 #define OTA_HOST "github.com"
 #define OTA_PORT "443"
 #define OTA_MANIFEST_URL "/Thermoquad/auto-damper/releases/latest/download/manifest.json"
-#define OTA_RECV_BUF_SIZE 2048
+/* GitHub's 302 response carries a content-security-policy header
+ * north of 3KB. The recv buffer must hold the full set of headers
+ * (chunks past the buffer get dropped before the parser sees them),
+ * so we size at 6KB to comfortably exceed GitHub's typical envelope. */
+#define OTA_RECV_BUF_SIZE 6144
 #define OTA_REQ_TIMEOUT_MS 30000
 
 //////////////////////////////////////////////////////////////
