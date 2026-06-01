@@ -317,12 +317,15 @@ static int http_get(const char *host, const char *port, const char *url,
    * recv_buf was zeroed so strnlen + scan stop at the actual data. */
   if (ctx->location[0] == '\0') {
     size_t used = strnlen((char *)recv_buf, sizeof(recv_buf));
-    LOG_INF("post-req recv_buf used=%u, status=%d", (unsigned)used, ctx->status);
-    if (used > 0 && used < 512) {
-      LOG_HEXDUMP_INF(recv_buf, used, "recv_buf");
-    } else if (used >= 512) {
-      LOG_HEXDUMP_INF(recv_buf, 512, "recv_buf (first 512)");
+    LOG_INF("post-req recv_buf used=%u (status=%d)", (unsigned)used, ctx->status);
+    /* Direct printk so the dump always reaches the wire — printf
+     * variants of LOG_HEXDUMP can get stripped by minimal logging. */
+    printk("---BEGIN recv_buf (%u bytes)---\n", (unsigned)used);
+    for (size_t i = 0; i < used && i < 1024; i++) {
+      char c = (char)recv_buf[i];
+      printk("%c", (c >= 32 && c < 127) || c == '\r' || c == '\n' ? c : '.');
     }
+    printk("\n---END recv_buf---\n");
     scan_location(ctx, recv_buf, used);
     LOG_INF("scan result: location='%s'", ctx->location);
   }
