@@ -28,8 +28,12 @@ static struct servo_config servo_cfg = {
 };
 
 static struct damper_config damper_cfg = {
+    /* Both default to 0 so the servo stays put on first boot before
+     * the user has configured per-installation angles. Driving to
+     * 270 against an unaligned diverter linkage can stall the servo
+     * or stress the mechanism. */
     .inside_angle = 0.0,
-    .outside_angle = 270.0,
+    .outside_angle = 0.0,
     .core_threshold = 150.0,
     .heater_name = "",
     .cool_setpoint = 25.0,

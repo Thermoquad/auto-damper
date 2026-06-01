@@ -335,7 +335,7 @@ export default function App() {
                     controls="sides"
                     size="lg"
                     min={0} max={270} step={0.5} precision={1}
-                    value={damper()?.outside_angle ?? 270}
+                    value={damper()?.outside_angle ?? 0}
                     on:void-change={(e: CustomEvent<{value: number}>) =>
                       saveConfig('outside_angle', e.detail.value)}
                   />
