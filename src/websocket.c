@@ -303,8 +303,14 @@ static char ws_cmd_buf[WS_BUF_SIZE];
 static K_SEM_DEFINE(ws_ota_trigger, 0, 1);
 static char ws_ota_progress_buf[512];
 
-/* What ota.check / ota.install set so the worker knows which to run. */
-static enum { OTA_REQ_NONE, OTA_REQ_CHECK, OTA_REQ_INSTALL } ws_ota_request;
+/* What ota.check / ota.install / ota.revert set so the worker knows
+ * which to run. */
+static enum {
+  OTA_REQ_NONE,
+  OTA_REQ_CHECK,
+  OTA_REQ_INSTALL,
+  OTA_REQ_REVERT,
+} ws_ota_request;
 
 static const char *ws_ota_state_str(enum ota_state s)
 {
@@ -323,16 +329,28 @@ static const char *ws_ota_state_str(enum ota_state s)
 
 static void ws_ota_progress_cb(const struct ota_progress *p)
 {
+  /* previous_version and auto_revert_enabled aren't carried in
+   * struct ota_progress (they aren't part of an update flow's state)
+   * but the UI's Revert tab depends on them being in every OTA
+   * snapshot it sees. Fetch fresh each broadcast - both are local
+   * reads. */
+  char prev[16];
+  ota_get_previous_version(prev, sizeof(prev));
+
   k_mutex_lock(&ws_tx_mutex, K_FOREVER);
   int len = snprintf(ws_ota_progress_buf, sizeof(ws_ota_progress_buf),
       "{\"type\":\"ota\",\"state\":\"%s\","
       "\"running_version\":\"%s\","
       "\"available_version\":\"%s\","
+      "\"previous_version\":\"%s\","
+      "\"auto_revert_enabled\":%s,"
       "\"bytes_received\":%u,\"bytes_total\":%u,"
       "\"error\":\"%s\"}",
       ws_ota_state_str(p->state),
       p->running_version,
       p->available_version,
+      prev,
+      ota_auto_revert_enabled() ? "true" : "false",
       p->bytes_received,
       p->bytes_total,
       p->error);
@@ -353,6 +371,8 @@ static void ws_ota_thread_fn(void *a, void *b, void *c)
       ota_check(ws_ota_progress_cb);
     } else if (req == OTA_REQ_INSTALL) {
       ota_install_pending(ws_ota_progress_cb);
+    } else if (req == OTA_REQ_REVERT) {
+      ota_revert(ws_ota_progress_cb);
     }
   }
 }
@@ -659,16 +679,21 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "ota.status") == 0) {
-    /* Reply with just the running version + IDLE state so the UI
-     * has something to show before an update is triggered. */
-    char running[16];
+    /* Reply with the OTA snapshot in IDLE state so the UI has
+     * something to show before an update is triggered. */
+    char running[16], prev[16];
     ota_get_running_version(running, sizeof(running));
+    ota_get_previous_version(prev, sizeof(prev));
     int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
         "{\"type\":\"ota\",\"state\":\"idle\","
         "\"running_version\":\"%s\","
-        "\"available_version\":\"\",\"bytes_received\":0,"
-        "\"bytes_total\":0,\"error\":\"\"}",
-        running);
+        "\"available_version\":\"\","
+        "\"previous_version\":\"%s\","
+        "\"auto_revert_enabled\":%s,"
+        "\"bytes_received\":0,\"bytes_total\":0,"
+        "\"error\":\"\"}",
+        running, prev,
+        ota_auto_revert_enabled() ? "true" : "false");
     ws_send_to(slot, ws_cmd_buf, len);
     return;
 
@@ -694,6 +719,39 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     k_sem_give(&ws_ota_trigger);
     ws_send_result(slot, true, NULL);
 
+  } else if (strcmp(type, "ota.revert") == 0) {
+    /* Manual revert. Same worker, same reboot exit - the only
+     * differences from install are no download and slot1 becomes
+     * the new slot0. */
+    if (k_sem_count_get(&ws_ota_trigger) > 0) {
+      ws_send_result(slot, false, "ota already in progress");
+      return;
+    }
+    ws_ota_request = OTA_REQ_REVERT;
+    k_sem_give(&ws_ota_trigger);
+    ws_send_result(slot, true, NULL);
+
+  } else if (strcmp(type, "ota.set_auto_revert") == 0) {
+    bool enabled;
+    if (!ws_json_get_bool(msg, "enabled", &enabled)) {
+      ws_send_result(slot, false, "missing 'enabled' bool");
+      return;
+    }
+    int rc = ota_set_auto_revert_enabled(enabled);
+    if (rc < 0) {
+      ws_send_result(slot, false, "nvs save failed");
+      return;
+    }
+    /* Re-broadcast the OTA snapshot so every client sees the new
+     * toggle state immediately. Synthesize an idle-state progress
+     * record - the actual values come from the callbacks fresh
+     * reads of the local APIs. */
+    struct ota_progress p = { .state = OTA_STATE_IDLE };
+    ota_get_running_version(p.running_version,
+                            sizeof(p.running_version));
+    ws_ota_progress_cb(&p);
+    ws_send_result(slot, true, NULL);
+
   } else {
     ws_send_result(slot, false, "unknown command type");
   }
@@ -717,14 +775,19 @@ static void ws_recv_handler(struct k_work *work)
   if (slot >= 0 && slot < WS_MAX_CLIENTS && client->sock >= 0 &&
       !client->sent_initial) {
     client->sent_initial = true;
-    char running[16];
+    char running[16], prev[16];
     ota_get_running_version(running, sizeof(running));
+    ota_get_previous_version(prev, sizeof(prev));
     int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
         "{\"type\":\"ota\",\"state\":\"idle\","
         "\"running_version\":\"%s\","
-        "\"available_version\":\"\",\"bytes_received\":0,"
-        "\"bytes_total\":0,\"error\":\"\"}",
-        running);
+        "\"available_version\":\"\","
+        "\"previous_version\":\"%s\","
+        "\"auto_revert_enabled\":%s,"
+        "\"bytes_received\":0,\"bytes_total\":0,"
+        "\"error\":\"\"}",
+        running, prev,
+        ota_auto_revert_enabled() ? "true" : "false");
     if (len > 0) ws_send_to(slot, ws_cmd_buf, len);
   }
   if (slot < 0 || slot >= WS_MAX_CLIENTS || client->sock < 0) {
