@@ -43,6 +43,20 @@ export type HeatersMsg = { type: 'heaters'; devices: HeaterDevice[] };
 
 export type ResultMsg = { type: 'result'; ok: boolean; error?: string };
 
+export type OtaState =
+  | 'idle' | 'checking' | 'up_to_date' | 'downloading'
+  | 'verifying' | 'swap_pending' | 'failed';
+
+export type OtaMsg = {
+  type: 'ota';
+  state: OtaState;
+  running_version: string;
+  available_version: string;
+  bytes_received: number;
+  bytes_total: number;
+  error: string;
+};
+
 export type HeaterPendingMsg = {
   type: 'heater.pending';
   target: string;
@@ -54,6 +68,7 @@ export type WsMessage =
   | DamperMsg
   | HeaterStatesMsg
   | HeatersMsg
+  | OtaMsg
   | ResultMsg
   | HeaterPendingMsg;
 
@@ -77,6 +92,7 @@ export function createWs() {
   const [heaters, setHeaters] = createSignal<Record<string, HeaterState>>({});
   const [devices, setDevices] = createSignal<HeaterDevice[]>([]);
   const [lastResult, setLastResult] = createSignal<ResultMsg | null>(null);
+  const [ota, setOta] = createSignal<OtaMsg | null>(null);
   /* `pendingByName` reflects per-heater commands dispatched but not
    * yet confirmed by telemetry. Each heater can have its own pending
    * operation in flight, so the index is the heater's name. */
@@ -216,6 +232,9 @@ export function createWs() {
           });
           break;
         }
+        case 'ota':
+          setOta(msg);
+          break;
         case 'result':
           setLastResult(msg);
           break;
@@ -257,6 +276,7 @@ export function createWs() {
     devices,
     lastResult,
     pendingByName,
+    ota,
     send,
     sendCmd,
   };

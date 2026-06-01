@@ -12,6 +12,7 @@
 
 #include <auto_damper/damper.h>
 #include <auto_damper/heater.h>
+#include <auto_damper/ota.h>
 #include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(websocket, LOG_LEVEL_INF);
@@ -287,6 +288,68 @@ static bool ws_json_get_bool(const char *body, const char *key, bool *out)
 //////////////////////////////////////////////////////////////
 
 static char ws_cmd_buf[WS_BUF_SIZE];
+
+//////////////////////////////////////////////////////////////
+// OTA worker thread
+//
+// OTA download is slow (~30s for 800KB over TLS) and must not run on
+// the WS recv work item. Dedicated thread waits on a semaphore; the
+// `ota.check` command gives the sem, the thread runs the update,
+// progress callbacks broadcast as `{type:"ota", ...}` to every
+// connected WS client.
+//////////////////////////////////////////////////////////////
+
+static K_SEM_DEFINE(ws_ota_trigger, 0, 1);
+static char ws_ota_progress_buf[512];
+
+static const char *ws_ota_state_str(enum ota_state s)
+{
+  switch (s) {
+  case OTA_STATE_IDLE:         return "idle";
+  case OTA_STATE_CHECKING:     return "checking";
+  case OTA_STATE_UP_TO_DATE:   return "up_to_date";
+  case OTA_STATE_DOWNLOADING:  return "downloading";
+  case OTA_STATE_VERIFYING:    return "verifying";
+  case OTA_STATE_SWAP_PENDING: return "swap_pending";
+  case OTA_STATE_FAILED:       return "failed";
+  default:                     return "unknown";
+  }
+}
+
+static void ws_ota_progress_cb(const struct ota_progress *p)
+{
+  k_mutex_lock(&ws_tx_mutex, K_FOREVER);
+  int len = snprintf(ws_ota_progress_buf, sizeof(ws_ota_progress_buf),
+      "{\"type\":\"ota\",\"state\":\"%s\","
+      "\"running_version\":\"%s\","
+      "\"available_version\":\"%s\","
+      "\"bytes_received\":%u,\"bytes_total\":%u,"
+      "\"error\":\"%s\"}",
+      ws_ota_state_str(p->state),
+      p->running_version,
+      p->available_version,
+      p->bytes_received,
+      p->bytes_total,
+      p->error);
+  if (len > 0) {
+    ws_broadcast(ws_ota_progress_buf, len);
+  }
+  k_mutex_unlock(&ws_tx_mutex);
+}
+
+static void ws_ota_thread_fn(void *a, void *b, void *c)
+{
+  ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+  while (1) {
+    k_sem_take(&ws_ota_trigger, K_FOREVER);
+    ota_check_and_update(ws_ota_progress_cb);
+  }
+}
+
+/* 8KB stack matches the shell where the OTA already runs successfully —
+ * mbedTLS handshake is the largest consumer. */
+K_THREAD_DEFINE(ws_ota_tid, 8192, ws_ota_thread_fn, NULL, NULL, NULL,
+                7, 0, 0);
 
 static void ws_send_result(int slot, bool ok, const char *error)
 {
@@ -582,6 +645,32 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
       ws_broadcast(pending_buf, plen);
     }
 
+    ws_send_result(slot, true, NULL);
+
+  } else if (strcmp(type, "ota.status") == 0) {
+    /* Reply with just the running version + IDLE state so the UI
+     * has something to show before an update is triggered. */
+    char running[16];
+    ota_get_running_version(running, sizeof(running));
+    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
+        "{\"type\":\"ota\",\"state\":\"idle\","
+        "\"running_version\":\"%s\","
+        "\"available_version\":\"\",\"bytes_received\":0,"
+        "\"bytes_total\":0,\"error\":\"\"}",
+        running);
+    ws_send_to(slot, ws_cmd_buf, len);
+    return;
+
+  } else if (strcmp(type, "ota.check") == 0) {
+    /* Trigger the OTA worker thread. It runs ota_check_and_update()
+     * with a callback that broadcasts each progress event to all
+     * connected WS clients. Returns immediately — progress arrives
+     * via the broadcast stream. */
+    if (k_sem_count_get(&ws_ota_trigger) > 0) {
+      ws_send_result(slot, false, "ota already in progress");
+      return;
+    }
+    k_sem_give(&ws_ota_trigger);
     ws_send_result(slot, true, NULL);
 
   } else {

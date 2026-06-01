@@ -5,7 +5,7 @@ import { createWs, type HeaterState } from './ws';
 export default function App() {
   const {
     connected, damper, heaters, devices,
-    pendingByName, send, sendCmd,
+    pendingByName, ota, send, sendCmd,
   } = createWs();
 
   const [sliding, setSliding] = createSignal(false);
@@ -183,8 +183,20 @@ export default function App() {
   const loadConfig = () => {
     send({ type: 'damper.status' });
     send({ type: 'heaters.list' });
+    send({ type: 'ota.status' });
   };
   createEffect(() => { if (connected()) loadConfig(); });
+
+  const otaCheck = () => sendCmd({ type: 'ota.check' });
+  const otaBusy = () => {
+    const s = ota()?.state;
+    return s === 'checking' || s === 'downloading' || s === 'verifying';
+  };
+  const otaProgress = () => {
+    const o = ota();
+    if (!o || o.bytes_total === 0) return 0;
+    return Math.round((o.bytes_received / o.bytes_total) * 100);
+  };
 
   return (
     <div class="shell">
@@ -487,6 +499,65 @@ export default function App() {
               </Show>
             </div>
           </Show>
+        </section>
+
+        <section class="card" data-testid="ota-card">
+          <div class="card-header">
+            <span class="card-title">Firmware</span>
+            <Show when={ota()}>
+              <void-badge
+                color={
+                  ota()!.state === 'failed' ? 'error' :
+                  ota()!.state === 'up_to_date' ? 'success' :
+                  ota()!.state === 'swap_pending' ? 'caution' :
+                  otaBusy() ? 'default' : 'default'
+                }>
+                {ota()!.state.replace('_', ' ')}
+              </void-badge>
+            </Show>
+          </div>
+          <div class="card-body">
+            <div class="stat-grid">
+              <void-stat size="sm" label="Running"
+                value={ota()?.running_version || '—'}
+                data-testid="ota-running" />
+              <void-stat size="sm" label="Latest"
+                value={ota()?.available_version || '—'}
+                data-testid="ota-available" />
+            </div>
+            <Show when={otaBusy() && ota()!.bytes_total > 0}>
+              <div class="ota-progress">
+                <div class="stat-label">
+                  {ota()!.bytes_received.toLocaleString()} / {ota()!.bytes_total.toLocaleString()} bytes ({otaProgress()}%)
+                </div>
+                <progress max={ota()!.bytes_total}
+                  value={ota()!.bytes_received}
+                  data-testid="ota-progress" />
+              </div>
+            </Show>
+            <Show when={ota()?.state === 'failed' && ota()!.error}>
+              <void-alert color="error" variant="subtle"
+                data-testid="ota-error">
+                {ota()!.error}
+              </void-alert>
+            </Show>
+            <Show when={ota()?.state === 'swap_pending'}>
+              <void-alert color="caution" variant="subtle">
+                Update installed. Device rebooting...
+              </void-alert>
+            </Show>
+          </div>
+          <div class="card-actions">
+            <void-button
+              size="lg" variant="filled" color="default"
+              disabled={otaBusy() || undefined}
+              data-testid="ota-check"
+              onClick={otaCheck}>
+              <Show when={otaBusy()} fallback="Check for updates">
+                <void-spinner size="sm" /> Checking
+              </Show>
+            </void-button>
+          </div>
         </section>
       </main>
     </div>
