@@ -600,7 +600,7 @@ export default function App() {
               </void-button>
             }>
               <void-button
-                size="lg" variant="filled" color="caution"
+                size="lg" variant="filled" color="success"
                 data-testid="ota-install"
                 onClick={otaInstall}>
                 Install {ota()!.available_version}
