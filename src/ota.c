@@ -16,9 +16,25 @@
 #include <bootutil/image.h>
 #include <psa/crypto.h>
 
+#include <auto_damper/config.h>
 #include <auto_damper/ota.h>
 
 LOG_MODULE_REGISTER(ota, LOG_LEVEL_INF);
+
+/* NVS slot for OTA settings. Picked 0x0050 to leave headroom around
+ * the damper (0x0040) and servo (0x0030) blocks. */
+#define NVS_ID_OTA_SETTINGS  0x0050
+#define NVS_TYPE_OTA         0x0050
+#define OTA_SETTINGS_VERSION 1
+
+struct ota_settings {
+  bool auto_revert_enabled;
+};
+
+static struct ota_settings ota_settings_cache = {
+    .auto_revert_enabled = true,
+};
+static bool ota_settings_loaded;
 
 //////////////////////////////////////////////////////////////
 // Config
@@ -37,6 +53,22 @@ LOG_MODULE_REGISTER(ota, LOG_LEVEL_INF);
 #define SLOT0_HEADER_ADDR \
   ((const struct image_header *)(CONFIG_FLASH_BASE_ADDRESS + \
                                  DT_REG_ADDR(DT_NODELABEL(slot0_partition))))
+#define SLOT1_HEADER_ADDR \
+  ((const struct image_header *)(CONFIG_FLASH_BASE_ADDRESS + \
+                                 DT_REG_ADDR(DT_NODELABEL(slot1_partition))))
+
+static void format_version(const struct image_header *hdr,
+                           char *out, size_t len)
+{
+  if (hdr->ih_magic != IMAGE_MAGIC) {
+    snprintf(out, len, "%s", "");
+    return;
+  }
+  snprintf(out, len, "%u.%u.%u",
+           hdr->ih_ver.iv_major,
+           hdr->ih_ver.iv_minor,
+           hdr->ih_ver.iv_revision);
+}
 
 void ota_get_running_version(char *out, size_t len)
 {
@@ -45,10 +77,16 @@ void ota_get_running_version(char *out, size_t len)
     snprintf(out, len, "unknown");
     return;
   }
-  snprintf(out, len, "%u.%u.%u",
-           hdr->ih_ver.iv_major,
-           hdr->ih_ver.iv_minor,
-           hdr->ih_ver.iv_revision);
+  format_version(hdr, out, len);
+}
+
+void ota_get_previous_version(char *out, size_t len)
+{
+  /* Slot1 holds whatever swap-using-offset moved out of slot0 on the
+   * last install. On a virgin device it's blank flash (magic !=
+   * IMAGE_MAGIC) and we return an empty string so the UI can hide the
+   * Revert affordance. */
+  format_version(SLOT1_HEADER_ADDR, out, len);
 }
 
 //////////////////////////////////////////////////////////////
@@ -621,4 +659,86 @@ int ota_install_pending(ota_progress_cb cb)
   k_sleep(K_MSEC(1500));
   sys_reboot(SYS_REBOOT_COLD);
   return 0;
+}
+
+//////////////////////////////////////////////////////////////
+// Manual revert
+//////////////////////////////////////////////////////////////
+
+int ota_revert(ota_progress_cb cb)
+{
+  struct ota_progress progress = {0};
+  ota_get_running_version(progress.running_version,
+                          sizeof(progress.running_version));
+  ota_get_previous_version(progress.available_version,
+                           sizeof(progress.available_version));
+
+  /* Slot1 must hold a valid image to revert into. On a virgin device
+   * slot1 is blank flash and there's nothing to roll back to. */
+  if (progress.available_version[0] == '\0') {
+    strncpy(progress.error, "no previous image in slot1",
+            sizeof(progress.error) - 1);
+    emit(cb, &progress, OTA_STATE_FAILED);
+    return -ENOENT;
+  }
+
+  /* Refuse to revert while a swap is already pending or in test mode.
+   * The right action then is "confirm or reboot" - not stacking another
+   * swap on top of a swap. */
+  int swap_type = boot_swap_type();
+  if (swap_type != BOOT_SWAP_TYPE_NONE) {
+    snprintf(progress.error, sizeof(progress.error),
+             "swap already pending (type %d)", swap_type);
+    emit(cb, &progress, OTA_STATE_FAILED);
+    return -EBUSY;
+  }
+
+  int rc = boot_set_pending(0);
+  if (rc < 0) {
+    snprintf(progress.error, sizeof(progress.error),
+             "boot_set_pending: %d", rc);
+    emit(cb, &progress, OTA_STATE_FAILED);
+    return rc;
+  }
+
+  emit(cb, &progress, OTA_STATE_SWAP_PENDING);
+  LOG_INF("Reverting %s -> %s, rebooting",
+          progress.running_version, progress.available_version);
+  k_sleep(K_MSEC(1500));
+  sys_reboot(SYS_REBOOT_COLD);
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////
+// Auto-revert NVS setting
+//////////////////////////////////////////////////////////////
+
+static void ensure_settings_loaded(void)
+{
+  if (ota_settings_loaded) return;
+  uint16_t version;
+  struct ota_settings loaded;
+  int rc = config_load(NVS_ID_OTA_SETTINGS, NVS_TYPE_OTA,
+                       &version, &loaded, sizeof(loaded));
+  if (rc == 0 && version == OTA_SETTINGS_VERSION) {
+    ota_settings_cache = loaded;
+  }
+  /* On miss or version mismatch we keep the compile-time default
+   * (auto_revert_enabled = true). */
+  ota_settings_loaded = true;
+}
+
+bool ota_auto_revert_enabled(void)
+{
+  ensure_settings_loaded();
+  return ota_settings_cache.auto_revert_enabled;
+}
+
+int ota_set_auto_revert_enabled(bool enabled)
+{
+  ensure_settings_loaded();
+  ota_settings_cache.auto_revert_enabled = enabled;
+  return config_save(NVS_ID_OTA_SETTINGS, NVS_TYPE_OTA,
+                     OTA_SETTINGS_VERSION, &ota_settings_cache,
+                     sizeof(ota_settings_cache));
 }

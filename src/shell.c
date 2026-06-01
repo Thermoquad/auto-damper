@@ -896,6 +896,51 @@ static int cmd_ota_update(const struct shell *sh, size_t argc, char **argv)
   return 0;
 }
 
+static int cmd_ota_revert(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+
+  char prev[16];
+  ota_get_previous_version(prev, sizeof(prev));
+  if (prev[0] == '\0') {
+    shell_error(sh, "No previous image in slot1 to revert to");
+    return -ENOENT;
+  }
+  shell_print(sh, "Reverting to %s (current image will move to slot1)",
+              prev);
+  ota_shell = sh;
+  int rc = ota_revert(ota_shell_progress);
+  ota_shell = NULL;
+  return rc < 0 ? rc : 0;
+}
+
+static int cmd_ota_auto_revert(const struct shell *sh, size_t argc,
+                               char **argv)
+{
+  if (argc == 1) {
+    shell_print(sh, "auto_revert: %s",
+                ota_auto_revert_enabled() ? "on" : "off");
+    return 0;
+  }
+  bool target;
+  if (strcmp(argv[1], "on") == 0) {
+    target = true;
+  } else if (strcmp(argv[1], "off") == 0) {
+    target = false;
+  } else {
+    shell_error(sh, "Usage: damper ota auto_revert <on|off>");
+    return -EINVAL;
+  }
+  int rc = ota_set_auto_revert_enabled(target);
+  if (rc < 0) {
+    shell_error(sh, "Failed to save setting: %d", rc);
+    return rc;
+  }
+  shell_print(sh, "auto_revert: %s", target ? "on" : "off");
+  return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
     ota_cmds,
     SHELL_CMD(update, NULL,
@@ -909,6 +954,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
               cmd_ota_confirm),
     SHELL_CMD(status, NULL, "Show whether running image is confirmed",
               cmd_ota_status),
+    SHELL_CMD(revert, NULL,
+              "Roll back to the previous image preserved in slot1",
+              cmd_ota_revert),
+    SHELL_CMD_ARG(auto_revert, NULL,
+                  "Toggle auto-revert watchdog: damper ota auto_revert [on|off]",
+                  cmd_ota_auto_revert, 1, 1),
     SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
