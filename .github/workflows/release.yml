@@ -110,8 +110,12 @@ jobs:
           VERSION: ${{ steps.tag.outputs.new_version }}
         run: |
           cd apps/auto-damper
+          # CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION is a Kconfig STRING, so the
+          # -D value must include the surrounding quotes — otherwise the
+          # generated extra_kconfig_options.conf has an unquoted assignment
+          # which Kconfig rejects as "malformed string literal".
           west build -b rpi_pico2/rp2350a/m33/w --sysbuild \
-            -- -DCONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION="${VERSION}+0"
+            -- -DCONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION="\"${VERSION}+0\""
 
       - name: Generate manifest.json
         if: steps.tag.outputs.new_tag != ''
