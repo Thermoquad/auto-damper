@@ -525,3 +525,4 @@ have_image:
   return 0;
 }
 // Trigger version bump for OTA test
+// version bump for OTA test
