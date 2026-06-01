@@ -52,6 +52,12 @@ export type OtaMsg = {
   state: OtaState;
   running_version: string;
   available_version: string;
+  /* MCUboot keeps the previous image in slot1 after a swap. Empty
+   * string on a virgin device with no rollback target. */
+  previous_version: string;
+  /* User-controlled bool, persisted to NVS, gates the future
+   * device-side auto-revert watchdog. */
+  auto_revert_enabled: boolean;
   bytes_received: number;
   bytes_total: number;
   error: string;

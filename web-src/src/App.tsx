@@ -11,6 +11,7 @@ export default function App() {
   const [sliding, setSliding] = createSignal(false);
   const [localAngle, setLocalAngle] = createSignal(0);
   const [damperTab, setDamperTab] = createSignal<'control' | 'config'>('control');
+  const [firmwareTab, setFirmwareTab] = createSignal<'update' | 'revert'>('update');
   const [selectedName, setSelectedName] = createSignal('');
   /** Manual-mode position limiter: when on, clamp angle to the
    *  [inside_angle, outside_angle] window. Browser-local state. */
@@ -190,6 +191,11 @@ export default function App() {
 
   const otaCheck = () => sendCmd({ type: 'ota.check' });
   const otaInstall = () => sendCmd({ type: 'ota.install' });
+  const otaRevert = () => sendCmd({ type: 'ota.revert' });
+  const otaSetAutoRevert = (enabled: boolean) =>
+    sendCmd({ type: 'ota.set_auto_revert', enabled });
+  const canRevert = () => !!ota()?.previous_version &&
+                          ota()!.previous_version !== '';
 
   /* Operations the device is actively running. Excludes
    * update_available - that's a wait-for-user state, not "busy". */
@@ -544,75 +550,137 @@ export default function App() {
               </void-badge>
             </Show>
           </div>
-          <div class="card-body ota-body">
-            <div class="stat-grid">
-              <void-stat size="sm" label="Running"
-                value={ota()?.running_version || '-'}
-                data-testid="ota-running" />
-              <void-stat size="sm" label="Latest"
-                value={ota()?.available_version || '-'}
-                data-testid="ota-available" />
-            </div>
-            <Show when={otaBusy() && ota()!.bytes_total > 0}>
-              <div class="ota-progress">
-                <div class="stat-label">
-                  {ota()!.bytes_received.toLocaleString()} / {ota()!.bytes_total.toLocaleString()} bytes ({otaProgress()}%)
+          <void-tabs
+            value={firmwareTab()}
+            size="lg"
+            on:void-change={(e: CustomEvent<{value: string}>) => {
+              if ((e.target as HTMLElement).tagName !== 'VOID-TABS') return;
+              setFirmwareTab(e.detail.value as 'update' | 'revert');
+            }}>
+            <void-tab-panel tab="update" label="Update">
+              <div class="card-body ota-body">
+                <div class="stat-grid">
+                  <void-stat size="sm" label="Running"
+                    value={ota()?.running_version || '-'}
+                    data-testid="ota-running" />
+                  <void-stat size="sm" label="Latest"
+                    value={ota()?.available_version || '-'}
+                    data-testid="ota-available" />
                 </div>
-                <void-progress size="md" color="default"
-                  max={ota()!.bytes_total}
-                  value={ota()!.bytes_received}
-                  data-testid="ota-progress" />
-              </div>
-            </Show>
-            <Show when={ota()?.state === 'update_available'}>
-              <void-alert color="caution" variant="subtle"
-                data-testid="ota-available-alert">
-                Version {ota()!.available_version} is available.
-                Click Install to download and apply the update. The device will reboot.
-              </void-alert>
-            </Show>
-            <Show when={ota()?.state === 'failed' && ota()!.error}>
-              <void-alert color="error" variant="subtle"
-                data-testid="ota-error">
-                {ota()!.error}
-              </void-alert>
-            </Show>
-            <Show when={ota()?.state === 'swap_pending'}>
-              <void-alert color="caution" variant="subtle">
-                Update installed. Device rebooting...
-              </void-alert>
-            </Show>
-          </div>
-          <div class="card-actions">
-            <Show when={ota()?.state === 'update_available'} fallback={
-              <void-button
-                size="lg" variant="filled" color="default"
-                disabled={otaBusy() || undefined}
-                data-testid="ota-check"
-                onClick={otaCheck}>
-                <Show when={otaBusy()} fallback="Check for updates">
-                  <void-spinner size="sm" />
-                  {ota()?.state === 'downloading' ? ' Downloading' :
-                   ota()?.state === 'verifying' ? ' Verifying' :
-                   ota()?.state === 'swap_pending' ? ' Rebooting' :
-                   ' Checking'}
+                <Show when={otaBusy() && ota()!.bytes_total > 0}>
+                  <div class="ota-progress">
+                    <div class="stat-label">
+                      {ota()!.bytes_received.toLocaleString()} / {ota()!.bytes_total.toLocaleString()} bytes ({otaProgress()}%)
+                    </div>
+                    <void-progress size="md" color="default"
+                      max={ota()!.bytes_total}
+                      value={ota()!.bytes_received}
+                      data-testid="ota-progress" />
+                  </div>
                 </Show>
-              </void-button>
-            }>
-              <void-button
-                size="lg" variant="filled" color="success"
-                data-testid="ota-install"
-                onClick={otaInstall}>
-                Install {ota()!.available_version}
-              </void-button>
-              <void-button
-                size="lg" variant="outline" color="default"
-                data-testid="ota-check"
-                onClick={otaCheck}>
-                Check again
-              </void-button>
-            </Show>
-          </div>
+                <Show when={ota()?.state === 'update_available'}>
+                  <void-alert color="caution" variant="subtle"
+                    data-testid="ota-available-alert">
+                    Version {ota()!.available_version} is available.
+                    Click Install to download and apply the update. The device will reboot.
+                  </void-alert>
+                </Show>
+                <Show when={ota()?.state === 'failed' && ota()!.error}>
+                  <void-alert color="error" variant="subtle"
+                    data-testid="ota-error">
+                    {ota()!.error}
+                  </void-alert>
+                </Show>
+                <Show when={ota()?.state === 'swap_pending'}>
+                  <void-alert color="caution" variant="subtle">
+                    Update installed. Device rebooting...
+                  </void-alert>
+                </Show>
+              </div>
+              <div class="card-actions">
+                <Show when={ota()?.state === 'update_available'} fallback={
+                  <void-button
+                    size="lg" variant="filled" color="default"
+                    disabled={otaBusy() || undefined}
+                    data-testid="ota-check"
+                    onClick={otaCheck}>
+                    <Show when={otaBusy()} fallback="Check for updates">
+                      <void-spinner size="sm" />
+                      {ota()?.state === 'downloading' ? ' Downloading' :
+                       ota()?.state === 'verifying' ? ' Verifying' :
+                       ota()?.state === 'swap_pending' ? ' Rebooting' :
+                       ' Checking'}
+                    </Show>
+                  </void-button>
+                }>
+                  <void-button
+                    size="lg" variant="filled" color="success"
+                    data-testid="ota-install"
+                    onClick={otaInstall}>
+                    Install {ota()!.available_version}
+                  </void-button>
+                  <void-button
+                    size="lg" variant="outline" color="default"
+                    data-testid="ota-check"
+                    onClick={otaCheck}>
+                    Check again
+                  </void-button>
+                </Show>
+              </div>
+            </void-tab-panel>
+            <void-tab-panel tab="revert" label="Revert">
+              <div class="card-body ota-body">
+                <div class="stat-grid">
+                  <void-stat size="sm" label="Running"
+                    value={ota()?.running_version || '-'}
+                    data-testid="ota-revert-running" />
+                  <void-stat size="sm" label="Previous"
+                    value={ota()?.previous_version || '-'}
+                    data-testid="ota-previous" />
+                </div>
+                <Show when={!canRevert()}>
+                  <void-alert color="info" variant="subtle"
+                    data-testid="ota-no-previous">
+                    No previous image available. Revert becomes possible
+                    after the device has completed at least one OTA update.
+                  </void-alert>
+                </Show>
+                <Show when={canRevert()}>
+                  <void-alert color="caution" variant="subtle"
+                    data-testid="ota-revert-warning">
+                    Reverting will roll back to {ota()!.previous_version}
+                    and reboot the device. The current image will be
+                    preserved in the alternate slot, so you can swap
+                    again from there.
+                  </void-alert>
+                </Show>
+                <label class="limit-switch">
+                  <void-switch
+                    size="xxl"
+                    checked={ota()?.auto_revert_enabled || undefined}
+                    data-testid="ota-auto-revert-switch"
+                    on:void-change={(e: CustomEvent<{checked: boolean}>) =>
+                      otaSetAutoRevert(e.detail.checked)}
+                  />
+                  <span>
+                    Auto-revert if a new image looks unhealthy
+                  </span>
+                </label>
+              </div>
+              <div class="card-actions">
+                <void-button
+                  size="lg" variant="filled" color="caution"
+                  disabled={!canRevert() || otaBusy() || undefined}
+                  data-testid="ota-revert"
+                  onClick={otaRevert}>
+                  <Show when={ota()?.state === 'swap_pending'}
+                        fallback={`Revert to ${ota()?.previous_version || '-'}`}>
+                    <void-spinner size="sm" /> Rebooting
+                  </Show>
+                </void-button>
+              </div>
+            </void-tab-panel>
+          </void-tabs>
         </section>
       </main>
     </div>
