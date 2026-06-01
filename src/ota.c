@@ -175,9 +175,9 @@ struct fetch_ctx {
   char location[256];
 };
 
-static void response_cb(struct http_response *rsp,
-                        enum http_final_call final_data,
-                        void *user_data)
+static int response_cb(struct http_response *rsp,
+                       enum http_final_call final_data,
+                       void *user_data)
 {
   struct fetch_ctx *ctx = user_data;
 
@@ -197,7 +197,7 @@ static void response_cb(struct http_response *rsp,
                                         false);
       if (rc < 0) {
         LOG_ERR("flash_img_buffered_write: %d", rc);
-        return;
+        return rc;
       }
       psa_hash_update(ctx->sha_op, rsp->body_frag_start,
                       rsp->body_frag_len);
@@ -212,6 +212,7 @@ static void response_cb(struct http_response *rsp,
   if (final_data == HTTP_DATA_FINAL && ctx->flash_ctx) {
     flash_img_buffered_write(ctx->flash_ctx, NULL, 0, true);
   }
+  return 0;
 }
 
 /* HTTP header callback to capture Location: header values during
@@ -505,11 +506,14 @@ have_image:
   }
   LOG_INF("Image sha256 verified: %s", digest_hex);
 
-  /* --- Mark slot1 for swap, reboot --- */
-  rc = boot_request_upgrade(BOOT_UPGRADE_TEST);
+  /* --- Mark slot1 for swap, reboot ---
+   * boot_set_pending(0) = test swap (revert if not confirmed by next
+   * reset). The application calls boot_set_confirmed() once WiFi
+   * associates + 60s uptime (added in damper.c). */
+  rc = boot_set_pending(0);
   if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
-             "boot_request_upgrade: %d", rc);
+             "boot_set_pending: %d", rc);
     emit(cb, &progress, OTA_STATE_FAILED);
     return rc;
   }
