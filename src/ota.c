@@ -112,8 +112,12 @@ static bool json_get_uint(const char *body, const char *key, uint32_t *out)
 // That's what this module does.
 //////////////////////////////////////////////////////////////
 
-static char redirect_url[512];
-static char line[768];
+/* GitHub's CDN signed-URL redirects carry ~1KB of JWT + signature
+ * query parameters. recv_line() also reuses this for the status
+ * line (well under 100 bytes), so making both wide keeps things
+ * simple. */
+static char redirect_url[2048];
+static char line[2048];
 
 /* sendall: write the whole buffer or return error. */
 static int sendall(int sock, const void *buf, size_t len)
@@ -328,7 +332,7 @@ static int fetch(const char *initial_url,
                  struct ota_progress *progress)
 {
   char host[64];
-  char path[512];
+  char path[2048];  /* signed CDN URLs have ~1KB query strings */
   int rc = split_url(initial_url, host, sizeof(host), path, sizeof(path));
   if (rc) return rc;
 
