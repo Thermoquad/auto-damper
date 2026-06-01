@@ -131,24 +131,38 @@ static int sendall(int sock, const void *buf, size_t len)
 }
 
 /* Read one CRLF-terminated line into 'line' (NUL-terminated, CRLF
- * stripped). Returns line length, 0 on connection close, or -errno. */
+ * stripped). Returns line length, 0 on connection close, or -errno.
+ *
+ * Lines longer than the buffer are silently truncated — we keep
+ * reading until CRLF so the stream stays aligned, but discard the
+ * excess. GitHub's content-security-policy header is ~3KB and we
+ * don't need to parse it; only Location and the status line matter.
+ * Returning E2BIG would abort the whole flow. */
 static int recv_line(int sock)
 {
   size_t i = 0;
   int prev_was_cr = 0;
-  while (i + 1 < sizeof(line)) {
+  bool truncated = false;
+  for (;;) {
     char c;
     ssize_t n = zsock_recv(sock, &c, 1, 0);
     if (n < 0) return -errno;
     if (n == 0) return 0;
     if (c == '\n' && prev_was_cr) {
+      if (truncated) {
+        line[sizeof(line) - 1] = '\0';
+        return (int)(sizeof(line) - 1);
+      }
       line[i - 1] = '\0';  /* trim the CR */
       return (int)(i - 1);
     }
-    line[i++] = c;
+    if (i + 1 < sizeof(line)) {
+      line[i++] = c;
+    } else {
+      truncated = true;
+    }
     prev_was_cr = (c == '\r');
   }
-  return -E2BIG;
 }
 
 /* Open a TLS socket to host:port. Image authenticity comes from
