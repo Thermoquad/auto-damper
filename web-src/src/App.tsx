@@ -530,7 +530,8 @@ export default function App() {
                 <div class="stat-label">
                   {ota()!.bytes_received.toLocaleString()} / {ota()!.bytes_total.toLocaleString()} bytes ({otaProgress()}%)
                 </div>
-                <progress max={ota()!.bytes_total}
+                <void-progress size="md" color="default"
+                  max={ota()!.bytes_total}
                   value={ota()!.bytes_received}
                   data-testid="ota-progress" />
               </div>
