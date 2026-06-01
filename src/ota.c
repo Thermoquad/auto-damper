@@ -3,17 +3,14 @@
 #include <ctype.h>
 #include <errno.h>
 #include <string.h>
-#include <strings.h>
 #include <stdio.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/net/http/client.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/tls_credentials.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/dfu/flash_img.h>
-#include <zephyr/storage/flash_map.h>
 
 #include <bootutil/bootutil_public.h>
 #include <bootutil/image.h>
@@ -30,18 +27,11 @@ LOG_MODULE_REGISTER(ota, LOG_LEVEL_INF);
 #define OTA_HOST "github.com"
 #define OTA_PORT "443"
 #define OTA_MANIFEST_URL "/Thermoquad/auto-damper/releases/latest/download/manifest.json"
-/* GitHub's 302 response carries a content-security-policy header
- * north of 3KB. The recv buffer must hold the full set of headers
- * (chunks past the buffer get dropped before the parser sees them),
- * so we size at 6KB to comfortably exceed GitHub's typical envelope. */
-#define OTA_RECV_BUF_SIZE 6144
-#define OTA_REQ_TIMEOUT_MS 30000
+#define OTA_RECV_CHUNK 1024
+#define OTA_MAX_REDIRECTS 5
 
 //////////////////////////////////////////////////////////////
-// Slot0 image header (XIP-mapped at flash base + slot0 offset)
-//
-// The MCUboot image header is at the very start of slot0. We can
-// read it directly via the XIP mapping — no flash_area API needed.
+// Image version (read from MCUboot header in slot0)
 //////////////////////////////////////////////////////////////
 
 #define SLOT0_HEADER_ADDR \
@@ -76,7 +66,7 @@ static int parse_version(const char *s, uint32_t *out)
 }
 
 //////////////////////////////////////////////////////////////
-// Minimal JSON value extraction (key:"value" or key:number)
+// Minimal JSON value extraction
 //////////////////////////////////////////////////////////////
 
 static bool json_get_string(const char *body, const char *key,
@@ -110,12 +100,64 @@ static bool json_get_uint(const char *body, const char *key, uint32_t *out)
 }
 
 //////////////////////////////////////////////////////////////
-// TLS socket open + connect, follow 302 redirects
+// Raw HTTP over TLS using sockets directly.
+//
+// Zephyr's http_client API compacts its recv buffer as the parser
+// consumes headers, which makes it impossible to reliably extract the
+// Location header from a redirect response from outside the parser.
+// The canonical Zephyr way for OTA-style HTTP downloads (per
+// samples/net/sockets/big_http_download) is to drive the socket
+// directly: send the request as a string, parse the response status
+// line + headers byte-by-byte from recv() output, then drain the body.
+// That's what this module does.
 //////////////////////////////////////////////////////////////
 
-static int tls_connect(const char *host, const char *port)
+static char redirect_url[512];
+static char line[768];
+
+/* sendall: write the whole buffer or return error. */
+static int sendall(int sock, const void *buf, size_t len)
 {
-  struct zsock_addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM};
+  const uint8_t *p = buf;
+  while (len > 0) {
+    ssize_t n = zsock_send(sock, p, len, 0);
+    if (n < 0) {
+      return -errno;
+    }
+    p += n;
+    len -= n;
+  }
+  return 0;
+}
+
+/* Read one CRLF-terminated line into 'line' (NUL-terminated, CRLF
+ * stripped). Returns line length, 0 on connection close, or -errno. */
+static int recv_line(int sock)
+{
+  size_t i = 0;
+  int prev_was_cr = 0;
+  while (i + 1 < sizeof(line)) {
+    char c;
+    ssize_t n = zsock_recv(sock, &c, 1, 0);
+    if (n < 0) return -errno;
+    if (n == 0) return 0;
+    if (c == '\n' && prev_was_cr) {
+      line[i - 1] = '\0';  /* trim the CR */
+      return (int)(i - 1);
+    }
+    line[i++] = c;
+    prev_was_cr = (c == '\r');
+  }
+  return -E2BIG;
+}
+
+/* Open a TLS socket to host:port. Image authenticity comes from
+ * MCUboot's ed25519 signature verification, so we skip cert chain
+ * validation to keep the firmware footprint small. */
+static int tls_open(const char *host, const char *port)
+{
+  struct zsock_addrinfo hints = {
+      .ai_family = AF_INET, .ai_socktype = SOCK_STREAM};
   struct zsock_addrinfo *res = NULL;
 
   int rc = zsock_getaddrinfo(host, port, &hints, &res);
@@ -126,301 +168,216 @@ static int tls_connect(const char *host, const char *port)
 
   int sock = zsock_socket(res->ai_family, res->ai_socktype, IPPROTO_TLS_1_2);
   if (sock < 0) {
+    int e = errno;
     zsock_freeaddrinfo(res);
-    return -errno;
+    return -e;
   }
 
-  /* Image authenticity comes from MCUboot's ed25519 signature check.
-   * TLS without cert verification is enough to prevent in-flight
-   * tampering with the cleartext download (which would only result in
-   * MCUboot rejecting the unsigned junk anyway). Full cert chain
-   * verification adds ~30KB of CA bundle + parsing — not worth it for
-   * an integrity-checked payload. */
   int verify = TLS_PEER_VERIFY_NONE;
-  if (zsock_setsockopt(sock, SOL_TLS, TLS_PEER_VERIFY,
-                       &verify, sizeof(verify)) < 0) {
-    LOG_WRN("TLS_PEER_VERIFY: %d", errno);
-  }
-  if (zsock_setsockopt(sock, SOL_TLS, TLS_HOSTNAME,
-                       host, strlen(host) + 1) < 0) {
-    LOG_WRN("TLS_HOSTNAME: %d", errno);
-  }
+  zsock_setsockopt(sock, SOL_TLS, TLS_PEER_VERIFY, &verify, sizeof(verify));
+  zsock_setsockopt(sock, SOL_TLS, TLS_HOSTNAME, host, strlen(host) + 1);
+  struct zsock_timeval to = {.tv_sec = 15};
+  zsock_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
+  zsock_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
 
   rc = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
   zsock_freeaddrinfo(res);
   if (rc < 0) {
-    LOG_ERR("connect: %d", errno);
+    int e = errno;
     zsock_close(sock);
-    return -errno;
+    return -e;
   }
   return sock;
 }
 
-//////////////////////////////////////////////////////////////
-// HTTP fetch with manual 302 follow
-//
-// We can't use Zephyr's http_client follow_redirect because the
-// redirect target is a different host (objects.githubusercontent.com)
-// and TLS wants a fresh connection + SNI for the new hostname. We
-// parse Location ourselves and recurse up to a depth limit.
-//////////////////////////////////////////////////////////////
-
-struct fetch_ctx {
-  /* For body capture (manifest): buffer + length */
-  uint8_t *body_buf;
-  size_t body_cap;
-  size_t body_len;
-  /* For binary stream (firmware): callbacks */
-  struct flash_img_context *flash_ctx;
-  psa_hash_operation_t *sha_op;
-  uint32_t *bytes_received;
-  uint32_t bytes_total;
-  ota_progress_cb cb;
-  struct ota_progress *progress;
-  /* HTTP response state captured from response_cb (http_status_code
-   * gets overwritten as the response is parsed; we latch the first
-   * non-zero value so caller sees the final status). */
-  int status;
-  char location[256];
-};
-
-/* Track Location across header parsing. http_parser invokes
- * on_header_field/on_header_value with chunks; we accumulate field
- * name fragments, watch for the field-to-value transition, and copy
- * the value when the field is "location". */
-static struct fetch_ctx *current_ctx;
-static char hdr_field_buf[32];
-static enum { HDR_NONE, HDR_FIELD, HDR_VALUE } hdr_state;
-static bool capturing_location;
-
-static int on_header_field(struct http_parser *p, const char *at, size_t len)
+/* Send a minimal HTTP/1.0 GET. HTTP/1.0 keeps things simple — server
+ * closes the connection after the body which makes EOF the natural
+ * "end of body" signal. */
+static int send_get(int sock, const char *host, const char *path)
 {
-  ARG_UNUSED(p);
-  if (hdr_state != HDR_FIELD) {
-    /* Transition into a new field — reset the accumulator. */
-    hdr_field_buf[0] = '\0';
-    capturing_location = false;
-    hdr_state = HDR_FIELD;
-  }
-  size_t pos = strlen(hdr_field_buf);
-  size_t take = MIN(len, sizeof(hdr_field_buf) - 1 - pos);
-  memcpy(hdr_field_buf + pos, at, take);
-  hdr_field_buf[pos + take] = '\0';
-  return 0;
+  int rc;
+  rc = sendall(sock, "GET ", 4);                       if (rc) return rc;
+  rc = sendall(sock, path, strlen(path));              if (rc) return rc;
+  rc = sendall(sock, " HTTP/1.0\r\nHost: ", 17);       if (rc) return rc;
+  rc = sendall(sock, host, strlen(host));              if (rc) return rc;
+  rc = sendall(sock, "\r\nUser-Agent: auto-damper-ota/1\r\n", 33);
+  if (rc) return rc;
+  rc = sendall(sock, "Accept: */*\r\nConnection: close\r\n\r\n", 33);
+  return rc;
 }
 
-static int on_header_value(struct http_parser *p, const char *at, size_t len)
+/* Parse "HTTP/x.y NNN ..." status line. Returns status code or <0. */
+static int parse_status_line(void)
 {
-  ARG_UNUSED(p);
-  if (hdr_state != HDR_VALUE) {
-    /* Field is now complete; decide whether to capture the value. */
-    hdr_state = HDR_VALUE;
-    /* Inline case-insensitive compare with "location" — picolibc on
-     * Zephyr doesn't always ship strcasecmp. */
-    const char *want = "location";
-    const char *got = hdr_field_buf;
-    capturing_location = true;
-    while (*want && *got) {
-      char a = *want++;
-      char b = *got++;
-      if (b >= 'A' && b <= 'Z') b += 32;
-      if (a != b) { capturing_location = false; break; }
-    }
-    if (*want || *got) capturing_location = false;
-    if (capturing_location && current_ctx) {
-      current_ctx->location[0] = '\0';
-    }
-  }
-  if (capturing_location && current_ctx) {
-    size_t pos = strlen(current_ctx->location);
-    size_t take = MIN(len, sizeof(current_ctx->location) - 1 - pos);
-    memcpy(current_ctx->location + pos, at, take);
-    current_ctx->location[pos + take] = '\0';
-  }
-  return 0;
+  const char *p = strchr(line, ' ');
+  if (!p) return -EBADMSG;
+  return atoi(p + 1);
 }
 
-static const struct http_parser_settings ota_parser_settings = {
-  .on_header_field = on_header_field,
-  .on_header_value = on_header_value,
-};
-
-static void scan_location(struct fetch_ctx *ctx, const uint8_t *buf, size_t len)
+/* Lowercase string in place. */
+static void str_lower(char *s)
 {
-  if (!buf || len == 0 || ctx->location[0]) {
-    return;
-  }
-  const char *p = (const char *)buf;
-  const char *end = p + len;
-  /* Case-insensitive scan for "location:" — GitHub uses lowercase. */
-  while (p < end - 9) {
-    if ((p[0] == 'L' || p[0] == 'l') &&
-        (p[1] == 'O' || p[1] == 'o') &&
-        (p[2] == 'C' || p[2] == 'c') &&
-        (p[3] == 'A' || p[3] == 'a') &&
-        (p[4] == 'T' || p[4] == 't') &&
-        (p[5] == 'I' || p[5] == 'i') &&
-        (p[6] == 'O' || p[6] == 'o') &&
-        (p[7] == 'N' || p[7] == 'n') &&
-        p[8] == ':') {
-      const char *v = p + 9;
-      while (v < end && (*v == ' ' || *v == '\t')) v++;
-      const char *nl = v;
-      while (nl < end && *nl != '\r' && *nl != '\n') nl++;
-      size_t vlen = nl - v;
-      if (vlen > 0 && vlen < sizeof(ctx->location)) {
-        memcpy(ctx->location, v, vlen);
-        ctx->location[vlen] = '\0';
-      }
-      return;
-    }
-    p++;
-  }
+  for (; *s; s++) *s = tolower((unsigned char)*s);
 }
 
-static int response_cb(struct http_response *rsp,
-                       enum http_final_call final_data,
-                       void *user_data)
+/* Read response status + headers. On 3xx, captures the Location URL
+ * into redirect_url. Returns the HTTP status code or negative errno. */
+static int read_headers(int sock)
 {
-  struct fetch_ctx *ctx = user_data;
+  int status = -1;
+  redirect_url[0] = '\0';
 
-  if (rsp->http_status_code != 0 && ctx->status == 0) {
-    ctx->status = rsp->http_status_code;
-  }
-  /* Scan the most-recently-received bytes for a Location header. The
-   * header may not all be in the body_frag window so scan the whole
-   * recv_buf. */
-  if (!ctx->location[0]) {
-    scan_location(ctx, rsp->recv_buf, rsp->data_len);
-  }
+  /* Status line. */
+  int len = recv_line(sock);
+  if (len < 0) return len;
+  if (len == 0) return -ECONNRESET;
+  status = parse_status_line();
+  if (status < 0) return status;
 
-  if (rsp->body_frag_start && rsp->body_frag_len > 0) {
-    if (ctx->body_buf) {
-      size_t take = MIN(rsp->body_frag_len,
-                        ctx->body_cap - ctx->body_len);
-      memcpy(ctx->body_buf + ctx->body_len, rsp->body_frag_start, take);
-      ctx->body_len += take;
-    } else if (ctx->flash_ctx) {
-      int rc = flash_img_buffered_write(ctx->flash_ctx,
-                                        rsp->body_frag_start,
-                                        rsp->body_frag_len,
-                                        false);
-      if (rc < 0) {
-        LOG_ERR("flash_img_buffered_write: %d", rc);
-        return rc;
-      }
-      psa_hash_update(ctx->sha_op, rsp->body_frag_start,
-                      rsp->body_frag_len);
-      *ctx->bytes_received += rsp->body_frag_len;
-      if (ctx->cb && (rsp->body_frag_len > 0)) {
-        ctx->progress->bytes_received = *ctx->bytes_received;
-        ctx->cb(ctx->progress);
-      }
+  /* Header lines. Blank line ends headers. */
+  for (;;) {
+    len = recv_line(sock);
+    if (len < 0) return len;
+    if (len == 0) {
+      /* Either blank line (headers done) or connection closed. The
+       * recv_line strips CRLF, so a blank line returns 0 length but
+       * we got here from a successful read. Treat as end of headers. */
+      break;
+    }
+
+    /* Split "Field: value" at colon. */
+    char *colon = strchr(line, ':');
+    if (!colon) continue;
+    *colon = '\0';
+    char *value = colon + 1;
+    while (*value == ' ' || *value == '\t') value++;
+
+    str_lower(line);
+    if (strcmp(line, "location") == 0) {
+      strncpy(redirect_url, value, sizeof(redirect_url) - 1);
+      redirect_url[sizeof(redirect_url) - 1] = '\0';
     }
   }
 
-  if (final_data == HTTP_DATA_FINAL && ctx->flash_ctx) {
-    flash_img_buffered_write(ctx->flash_ctx, NULL, 0, true);
-  }
-  return 0;
+  return status;
 }
 
-/* HTTP header callback to capture Location: header values during
- * redirect responses. Called for each header line. */
-static int header_cb(struct http_response *rsp,
-                     enum http_final_call final_data,
-                     void *user_data)
-{
-  ARG_UNUSED(rsp);
-  ARG_UNUSED(final_data);
-  ARG_UNUSED(user_data);
-  /* http_client already parses Location into rsp->http_status and
-   * the redirect body; we'll inspect rsp->http_status in our caller. */
-  return 0;
-}
-
-/* GET <url> from <host>. If 'body_buf' is non-NULL, the response body
- * is captured into it (for manifest). If 'flash_ctx' is non-NULL, the
- * body is streamed into the slot1 flash image (for firmware). On
- * 30x responses, the Location header is captured into 'redirect_out'. */
-static int http_get(const char *host, const char *port, const char *url,
-                    struct fetch_ctx *ctx, int *status_out,
-                    char *redirect_out, size_t redirect_cap)
-{
-  int sock = tls_connect(host, port);
-  if (sock < 0) {
-    return sock;
-  }
-
-  static uint8_t recv_buf[OTA_RECV_BUF_SIZE];
-  /* Zero recv_buf so post-request scans for Location can stop at the
-   * first NUL byte without overshooting into stale data. The http_client
-   * resets rsp->data_len to 0 before invoking the FINAL callback (with
-   * no body fragments for 30x responses), so we can't rely on the
-   * callback to scan during processing. */
-  memset(recv_buf, 0, sizeof(recv_buf));
-
-  struct http_request req = {
-      .method = HTTP_GET,
-      .url = url,
-      .host = host,
-      .protocol = "HTTP/1.1",
-      .response = response_cb,
-      .recv_buf = recv_buf,
-      .recv_buf_len = sizeof(recv_buf),
-      /* Hook into the response header parser so we can capture
-       * Location as it's parsed. recv_buf-based post-scanning was
-       * unreliable because http_client compacts the buffer as the
-       * parser consumes headers. */
-      .http_cb = &ota_parser_settings,
-  };
-
-  ctx->status = 0;
-  ctx->location[0] = '\0';
-  /* Parser callbacks reach into current_ctx — set the global for the
-   * duration of the request, then clear it after. Single-threaded
-   * OTA use means no concurrent-request hazard. */
-  current_ctx = ctx;
-  hdr_field_buf[0] = '\0';
-  hdr_state = HDR_NONE;
-  capturing_location = false;
-  int rc = http_client_req(sock, &req, OTA_REQ_TIMEOUT_MS, ctx);
-  current_ctx = NULL;
-  zsock_close(sock);
-  if (rc < 0) {
-    LOG_ERR("http_client_req: %d", rc);
-    return rc;
-  }
-
-  if (status_out) {
-    *status_out = ctx->status;
-  }
-  if (redirect_out) {
-    strncpy(redirect_out, ctx->location, redirect_cap - 1);
-    redirect_out[redirect_cap - 1] = '\0';
-  }
-  return 0;
-}
-
-/* Split a URL like "https://host/path" into host + path components. */
+/* Split "https://host/path" into host + path. Path defaults to "/" if
+ * the URL has no path component. Returns 0 or -EINVAL. */
 static int split_url(const char *url, char *host_out, size_t host_cap,
                      char *path_out, size_t path_cap)
 {
-  if (strncmp(url, "https://", 8) != 0) {
+  const char *p;
+  if (strncmp(url, "https://", 8) == 0) {
+    p = url + 8;
+  } else if (strncmp(url, "http://", 7) == 0) {
+    p = url + 7;
+  } else {
     return -EINVAL;
   }
-  const char *p = url + 8;
   const char *slash = strchr(p, '/');
-  if (!slash) {
-    return -EINVAL;
-  }
-  size_t host_len = slash - p;
-  if (host_len >= host_cap) return -E2BIG;
+  size_t host_len = slash ? (size_t)(slash - p) : strlen(p);
+  if (host_len == 0 || host_len >= host_cap) return -EINVAL;
   memcpy(host_out, p, host_len);
   host_out[host_len] = '\0';
-  if (strlen(slash) >= path_cap) return -E2BIG;
-  strcpy(path_out, slash);
+  if (slash) {
+    if (strlen(slash) >= path_cap) return -E2BIG;
+    strcpy(path_out, slash);
+  } else {
+    if (path_cap < 2) return -E2BIG;
+    strcpy(path_out, "/");
+  }
   return 0;
+}
+
+//////////////////////////////////////////////////////////////
+// High-level fetch helpers
+//////////////////////////////////////////////////////////////
+
+/* Fetch a URL, following up to OTA_MAX_REDIRECTS hops. The caller
+ * provides ONE of:
+ *   - body_buf (small): accumulate the body into this buffer
+ *   - flash_ctx + sha + progress: stream the body into slot1 image,
+ *     updating SHA-256 and emitting download progress
+ * Returns 0 on success, negative errno on failure. */
+static int fetch(const char *initial_url,
+                 uint8_t *body_buf, size_t body_cap, size_t *body_len_out,
+                 struct flash_img_context *flash_ctx,
+                 psa_hash_operation_t *sha,
+                 uint32_t *bytes_received,
+                 uint32_t expected_bytes,
+                 ota_progress_cb cb,
+                 struct ota_progress *progress)
+{
+  char host[64];
+  char path[512];
+  int rc = split_url(initial_url, host, sizeof(host), path, sizeof(path));
+  if (rc) return rc;
+
+  for (int hop = 0; hop < OTA_MAX_REDIRECTS; hop++) {
+    int sock = tls_open(host, OTA_PORT);
+    if (sock < 0) return sock;
+
+    rc = send_get(sock, host, path);
+    if (rc) { zsock_close(sock); return rc; }
+
+    int status = read_headers(sock);
+    if (status < 0) { zsock_close(sock); return status; }
+
+    if (status >= 300 && status < 400) {
+      zsock_close(sock);
+      if (redirect_url[0] == '\0') return -ENOENT;
+      LOG_INF("redirect %d -> %s", status, redirect_url);
+      rc = split_url(redirect_url, host, sizeof(host), path, sizeof(path));
+      if (rc) return rc;
+      continue;
+    }
+    if (status != 200) {
+      LOG_ERR("HTTP %d", status);
+      zsock_close(sock);
+      return -EIO;
+    }
+
+    /* Drain the body. */
+    if (body_len_out) *body_len_out = 0;
+    uint8_t buf[OTA_RECV_CHUNK];
+    while (1) {
+      ssize_t n = zsock_recv(sock, buf, sizeof(buf), 0);
+      if (n < 0) {
+        zsock_close(sock);
+        return -errno;
+      }
+      if (n == 0) break;  /* EOF — body complete (HTTP/1.0) */
+
+      if (body_buf) {
+        size_t take = MIN((size_t)n, body_cap - *body_len_out);
+        memcpy(body_buf + *body_len_out, buf, take);
+        *body_len_out += take;
+      } else if (flash_ctx) {
+        int frc = flash_img_buffered_write(flash_ctx, buf, n, false);
+        if (frc < 0) {
+          LOG_ERR("flash_img_buffered_write: %d", frc);
+          zsock_close(sock);
+          return frc;
+        }
+        psa_hash_update(sha, buf, n);
+        *bytes_received += n;
+        if (cb && (*bytes_received & 0x3FFF) < (uint32_t)n) {
+          /* progress every ~16KB */
+          progress->bytes_received = *bytes_received;
+          progress->bytes_total = expected_bytes;
+          cb(progress);
+        }
+      }
+    }
+    if (flash_ctx) {
+      flash_img_buffered_write(flash_ctx, NULL, 0, true);
+    }
+
+    zsock_close(sock);
+    return 0;
+  }
+  return -ELOOP;
 }
 
 //////////////////////////////////////////////////////////////
@@ -440,55 +397,24 @@ int ota_check_and_update(ota_progress_cb cb)
                           sizeof(progress.running_version));
   emit(cb, &progress, OTA_STATE_CHECKING);
 
-  /* --- Fetch manifest, following redirects --- */
-  char host[64] = OTA_HOST;
-  char path[256];
-  strncpy(path, OTA_MANIFEST_URL, sizeof(path) - 1);
+  /* --- Fetch manifest --- */
   static char manifest[1024];
-  char redirect[512];
+  size_t mlen = 0;
+  char start_url[256];
+  snprintf(start_url, sizeof(start_url), "https://%s%s",
+           OTA_HOST, OTA_MANIFEST_URL);
 
-  for (int hop = 0; hop < 5; hop++) {
-    struct fetch_ctx ctx = {
-        .body_buf = (uint8_t *)manifest,
-        .body_cap = sizeof(manifest) - 1,
-        .body_len = 0,
-    };
-    redirect[0] = '\0';
-    int status = 0;
-    int rc = http_get(host, OTA_PORT, path, &ctx, &status,
-                      redirect, sizeof(redirect));
-    if (rc < 0) {
-      strncpy(progress.error, "manifest fetch failed",
-              sizeof(progress.error) - 1);
-      emit(cb, &progress, OTA_STATE_FAILED);
-      return rc;
-    }
-    if (status == 200) {
-      manifest[ctx.body_len] = '\0';
-      goto have_manifest;
-    }
-    if (status >= 300 && status < 400 && redirect[0]) {
-      int rc2 = split_url(redirect, host, sizeof(host), path, sizeof(path));
-      if (rc2 < 0) {
-        strncpy(progress.error, "bad redirect URL",
-                sizeof(progress.error) - 1);
-        emit(cb, &progress, OTA_STATE_FAILED);
-        return rc2;
-      }
-      continue;
-    }
+  int rc = fetch(start_url, (uint8_t *)manifest, sizeof(manifest) - 1, &mlen,
+                 NULL, NULL, NULL, 0, NULL, NULL);
+  if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
-             "manifest HTTP %d", status);
+             "manifest fetch failed: %d", rc);
     emit(cb, &progress, OTA_STATE_FAILED);
-    return -EIO;
+    return rc;
   }
-  strncpy(progress.error, "too many redirects",
-          sizeof(progress.error) - 1);
-  emit(cb, &progress, OTA_STATE_FAILED);
-  return -ELOOP;
+  manifest[mlen] = '\0';
+  LOG_INF("manifest (%u bytes)", (unsigned)mlen);
 
-have_manifest:
-  /* --- Parse manifest --- */
   if (!json_get_string(manifest, "version",
                        progress.available_version,
                        sizeof(progress.available_version))) {
@@ -520,7 +446,7 @@ have_manifest:
   parse_version(progress.running_version, &cur);
   parse_version(progress.available_version, &avail);
   if (avail <= cur) {
-    LOG_INF("Running %s, available %s — up to date",
+    LOG_INF("Up to date: %s (latest %s)",
             progress.running_version, progress.available_version);
     emit(cb, &progress, OTA_STATE_UP_TO_DATE);
     return -EAGAIN;
@@ -531,7 +457,7 @@ have_manifest:
   /* --- Download binary into slot1 --- */
   emit(cb, &progress, OTA_STATE_DOWNLOADING);
   struct flash_img_context flash_ctx;
-  int rc = flash_img_init(&flash_ctx);
+  rc = flash_img_init(&flash_ctx);
   if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
              "flash_img_init: %d", rc);
@@ -540,73 +466,29 @@ have_manifest:
   }
 
   psa_hash_operation_t sha = PSA_HASH_OPERATION_INIT;
-  psa_status_t psa_rc = psa_hash_setup(&sha, PSA_ALG_SHA_256);
-  if (psa_rc != PSA_SUCCESS) {
-    snprintf(progress.error, sizeof(progress.error),
-             "psa_hash_setup: %d", (int)psa_rc);
+  if (psa_hash_setup(&sha, PSA_ALG_SHA_256) != PSA_SUCCESS) {
+    strncpy(progress.error, "psa_hash_setup failed",
+            sizeof(progress.error) - 1);
     emit(cb, &progress, OTA_STATE_FAILED);
     return -EIO;
   }
 
   uint32_t bytes_received = 0;
-  char dl_host[64];
-  char dl_path[512];
-  if (split_url(fw_url, dl_host, sizeof(dl_host),
-                dl_path, sizeof(dl_path)) < 0) {
-    strncpy(progress.error, "bad firmware URL",
-            sizeof(progress.error) - 1);
-    emit(cb, &progress, OTA_STATE_FAILED);
-    return -EINVAL;
-  }
-
-  /* Firmware URL also redirects through GitHub's CDN. */
-  for (int hop = 0; hop < 5; hop++) {
-    struct fetch_ctx ctx = {
-        .flash_ctx = &flash_ctx,
-        .sha_op = &sha,
-        .bytes_received = &bytes_received,
-        .bytes_total = expected_size,
-        .cb = cb,
-        .progress = &progress,
-    };
-    redirect[0] = '\0';
-    int status = 0;
-    int hrc = http_get(dl_host, OTA_PORT, dl_path, &ctx, &status,
-                       redirect, sizeof(redirect));
-    if (hrc < 0) {
-      strncpy(progress.error, "firmware fetch failed",
-              sizeof(progress.error) - 1);
-      emit(cb, &progress, OTA_STATE_FAILED);
-      return hrc;
-    }
-    if (status == 200) {
-      goto have_image;
-    }
-    if (status >= 300 && status < 400 && redirect[0]) {
-      bytes_received = 0;
-      flash_img_init(&flash_ctx);
-      psa_hash_abort(&sha);
-      psa_hash_setup(&sha, PSA_ALG_SHA_256);
-      if (split_url(redirect, dl_host, sizeof(dl_host),
-                    dl_path, sizeof(dl_path)) < 0) {
-        emit(cb, &progress, OTA_STATE_FAILED);
-        return -EINVAL;
-      }
-      continue;
-    }
+  rc = fetch(fw_url, NULL, 0, NULL, &flash_ctx, &sha,
+             &bytes_received, expected_size, cb, &progress);
+  if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
-             "firmware HTTP %d", status);
+             "firmware fetch failed: %d", rc);
     emit(cb, &progress, OTA_STATE_FAILED);
-    return -EIO;
+    return rc;
   }
 
-have_image:
   /* --- Verify sha256 --- */
   emit(cb, &progress, OTA_STATE_VERIFYING);
   uint8_t digest[32];
   size_t digest_len = 0;
-  psa_rc = psa_hash_finish(&sha, digest, sizeof(digest), &digest_len);
-  if (psa_rc != PSA_SUCCESS || digest_len != 32) {
+  if (psa_hash_finish(&sha, digest, sizeof(digest), &digest_len) != PSA_SUCCESS
+      || digest_len != 32) {
     strncpy(progress.error, "hash finalize failed",
             sizeof(progress.error) - 1);
     emit(cb, &progress, OTA_STATE_FAILED);
@@ -625,10 +507,7 @@ have_image:
   }
   LOG_INF("Image sha256 verified: %s", digest_hex);
 
-  /* --- Mark slot1 for swap, reboot ---
-   * boot_set_pending(0) = test swap (revert if not confirmed by next
-   * reset). The application calls boot_set_confirmed() once WiFi
-   * associates + 60s uptime (added in damper.c). */
+  /* --- Mark slot1 for test swap, reboot --- */
   rc = boot_set_pending(0);
   if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
@@ -640,12 +519,5 @@ have_image:
   LOG_INF("Update %s ready — rebooting", progress.available_version);
   k_sleep(K_MSEC(1500));
   sys_reboot(SYS_REBOOT_COLD);
-  /* not reached */
   return 0;
 }
-// Trigger version bump for OTA test
-// version bump for OTA test
-// bump
-// bump
-// bump
-//bump
