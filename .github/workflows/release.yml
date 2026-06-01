@@ -76,8 +76,9 @@ jobs:
 
       - name: Install Zephyr SDK
         if: steps.tag.outputs.new_tag != ''
+        env:
+          SDK_VERSION: 1.0.1
         run: |
-          SDK_VERSION=0.17.0
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v${SDK_VERSION}/zephyr-sdk-${SDK_VERSION}_linux-x86_64_minimal.tar.xz
           tar -xJf zephyr-sdk-${SDK_VERSION}_linux-x86_64_minimal.tar.xz
           cd zephyr-sdk-${SDK_VERSION}
@@ -105,7 +106,7 @@ jobs:
         if: steps.tag.outputs.new_tag != ''
         env:
           ZEPHYR_BASE: ${{ github.workspace }}/zephyr
-          ZEPHYR_SDK_INSTALL_DIR: ${{ github.workspace }}/zephyr-sdk-0.17.0
+          ZEPHYR_SDK_INSTALL_DIR: ${{ github.workspace }}/zephyr-sdk-1.0.1
           VERSION: ${{ steps.tag.outputs.new_version }}
         run: |
           cd apps/auto-damper
