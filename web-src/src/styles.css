@@ -98,6 +98,14 @@ body {
   gap: var(--void-space-4);
 }
 
+/* Match the dimensions of the badge it replaces while we wait for
+ * the device to push the first OTA snapshot. */
+.ota-badge-skeleton {
+  width: 4.5rem;
+  height: 1.5rem;
+  border-radius: var(--void-radius-full, 9999px);
+}
+
 .card-actions {
   display: flex;
   flex-wrap: wrap;

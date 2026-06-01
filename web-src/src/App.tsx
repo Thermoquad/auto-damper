@@ -199,11 +199,16 @@ export default function App() {
            s === 'verifying' || s === 'swap_pending';
   };
 
-  /* Map the wire state to the user-facing badge label. The wire
-   * states are too internal to show directly. */
+  /* Map the wire state to the user-facing badge label. Idle isn't
+   * shown — we haven't actually verified we're current, so claiming
+   * so would be a lie. The badge is suppressed until there's real
+   * info (see ota-card render: <Show when={otaBadgeVisible()}>). */
+  const otaBadgeVisible = () => {
+    const s = ota()?.state;
+    return s !== undefined && s !== 'idle';
+  };
   const otaBadgeLabel = (): string => {
     const s = ota()?.state;
-    if (!s || s === 'idle') return 'Current';
     if (s === 'up_to_date') return 'Current';
     if (s === 'update_available') return 'Behind';
     if (s === 'failed') return 'Error';
@@ -213,8 +218,8 @@ export default function App() {
     const s = ota()?.state;
     if (s === 'failed') return 'error';
     if (s === 'update_available') return 'caution';
-    if (otaBusy()) return 'info';
-    return 'success';
+    if (s === 'up_to_date') return 'success';
+    return 'info';
   };
   const otaProgress = () => {
     const o = ota();
@@ -528,7 +533,11 @@ export default function App() {
         <section class="card" data-testid="ota-card">
           <div class="card-header">
             <span class="card-title">Firmware</span>
-            <Show when={ota()}>
+            <Show when={otaBadgeVisible()} fallback={
+              <void-skeleton variant="text"
+                class="ota-badge-skeleton"
+                data-testid="ota-badge-skeleton" />
+            }>
               <void-badge color={otaBadgeColor()} data-testid="ota-badge">
                 {otaBadgeLabel()}
               </void-badge>
