@@ -317,7 +317,14 @@ static int http_get(const char *host, const char *port, const char *url,
    * recv_buf was zeroed so strnlen + scan stop at the actual data. */
   if (ctx->location[0] == '\0') {
     size_t used = strnlen((char *)recv_buf, sizeof(recv_buf));
+    LOG_INF("post-req recv_buf used=%u, status=%d", (unsigned)used, ctx->status);
+    if (used > 0 && used < 512) {
+      LOG_HEXDUMP_INF(recv_buf, used, "recv_buf");
+    } else if (used >= 512) {
+      LOG_HEXDUMP_INF(recv_buf, 512, "recv_buf (first 512)");
+    }
     scan_location(ctx, recv_buf, used);
+    LOG_INF("scan result: location='%s'", ctx->location);
   }
 
   if (status_out) {
