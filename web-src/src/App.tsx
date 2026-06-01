@@ -199,13 +199,14 @@ export default function App() {
            s === 'verifying' || s === 'swap_pending';
   };
 
-  /* Map the wire state to the user-facing badge label. Idle isn't
-   * shown — we haven't actually verified we're current, so claiming
-   * so would be a lie. The badge is suppressed until there's real
-   * info (see ota-card render: <Show when={otaBadgeVisible()}>). */
+  /* Map the wire state to the user-facing badge label. We show the
+   * skeleton placeholder when the state genuinely doesn't tell us
+   * anything yet: before any message arrives, in the idle pre-check
+   * state, and *while* a check is in flight — until the manifest
+   * comes back we can't honestly call ourselves Current or Behind. */
   const otaBadgeVisible = () => {
     const s = ota()?.state;
-    return s !== undefined && s !== 'idle';
+    return s !== undefined && s !== 'idle' && s !== 'checking';
   };
   const otaBadgeLabel = (): string => {
     const s = ota()?.state;
