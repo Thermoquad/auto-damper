@@ -521,3 +521,4 @@ int ota_check_and_update(ota_progress_cb cb)
   sys_reboot(SYS_REBOOT_COLD);
   return 0;
 }
+//bump
