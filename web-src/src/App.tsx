@@ -581,7 +581,11 @@ export default function App() {
                 data-testid="ota-check"
                 onClick={otaCheck}>
                 <Show when={otaBusy()} fallback="Check for updates">
-                  <void-spinner size="sm" /> Checking
+                  <void-spinner size="sm" />
+                  {ota()?.state === 'downloading' ? ' Downloading' :
+                   ota()?.state === 'verifying' ? ' Verifying' :
+                   ota()?.state === 'swap_pending' ? ' Rebooting' :
+                   ' Checking'}
                 </Show>
               </void-button>
             }>
