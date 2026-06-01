@@ -9,6 +9,8 @@
 #include <zephyr/zbus/zbus.h>
 #include <bootutil/bootutil_public.h>
 
+#include <auto_damper/ota.h>
+
 #include <auto_damper/damper.h>
 #include <auto_damper/zbus.h>
 #include <auto_damper/heater.h>
@@ -848,8 +850,52 @@ static int cmd_ota_status(const struct shell *sh, size_t argc, char **argv)
   return 0;
 }
 
+static const struct shell *ota_shell;
+static void ota_shell_progress(const struct ota_progress *p)
+{
+  if (!ota_shell) return;
+  switch (p->state) {
+  case OTA_STATE_CHECKING:
+    shell_print(ota_shell, "Checking for updates (running %s)...",
+                p->running_version);
+    break;
+  case OTA_STATE_UP_TO_DATE:
+    shell_print(ota_shell, "Up to date: %s (latest %s)",
+                p->running_version, p->available_version);
+    break;
+  case OTA_STATE_DOWNLOADING:
+    shell_print(ota_shell, "Downloading %s: %u/%u bytes",
+                p->available_version, p->bytes_received, p->bytes_total);
+    break;
+  case OTA_STATE_VERIFYING:
+    shell_print(ota_shell, "Verifying sha256...");
+    break;
+  case OTA_STATE_SWAP_PENDING:
+    shell_print(ota_shell, "Update %s installed — rebooting",
+                p->available_version);
+    break;
+  case OTA_STATE_FAILED:
+    shell_error(ota_shell, "OTA failed: %s", p->error);
+    break;
+  default: break;
+  }
+}
+
+static int cmd_ota_update(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+  ota_shell = sh;
+  ota_check_and_update(ota_shell_progress);
+  ota_shell = NULL;
+  return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
     ota_cmds,
+    SHELL_CMD(update, NULL,
+              "Check for and install firmware updates from GitHub Releases",
+              cmd_ota_update),
     SHELL_CMD(test_swap, NULL,
               "Trigger slot1 -> slot0 test swap on next boot",
               cmd_ota_test_swap),
