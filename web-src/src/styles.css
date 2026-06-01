@@ -90,6 +90,14 @@ body {
   padding: var(--void-space-5);
 }
 
+/* OTA card stacks stat-grid + progress + alerts as siblings — needs
+ * gap so the rebooting / available banners don't touch the version stats. */
+.ota-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--void-space-4);
+}
+
 .card-actions {
   display: flex;
   flex-wrap: wrap;

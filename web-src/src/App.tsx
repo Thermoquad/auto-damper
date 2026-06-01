@@ -183,14 +183,38 @@ export default function App() {
   const loadConfig = () => {
     send({ type: 'damper.status' });
     send({ type: 'heaters.list' });
-    send({ type: 'ota.status' });
+    /* OTA snapshot arrives via server-pushed initial message — no
+     * need to query. */
   };
   createEffect(() => { if (connected()) loadConfig(); });
 
   const otaCheck = () => sendCmd({ type: 'ota.check' });
+  const otaInstall = () => sendCmd({ type: 'ota.install' });
+
+  /* Operations the device is actively running. Excludes
+   * update_available — that's a wait-for-user state, not "busy". */
   const otaBusy = () => {
     const s = ota()?.state;
-    return s === 'checking' || s === 'downloading' || s === 'verifying';
+    return s === 'checking' || s === 'downloading' ||
+           s === 'verifying' || s === 'swap_pending';
+  };
+
+  /* Map the wire state to the user-facing badge label. The wire
+   * states are too internal to show directly. */
+  const otaBadgeLabel = (): string => {
+    const s = ota()?.state;
+    if (!s || s === 'idle') return 'Current';
+    if (s === 'up_to_date') return 'Current';
+    if (s === 'update_available') return 'Behind';
+    if (s === 'failed') return 'Error';
+    return 'Updating';
+  };
+  const otaBadgeColor = () => {
+    const s = ota()?.state;
+    if (s === 'failed') return 'error';
+    if (s === 'update_available') return 'caution';
+    if (otaBusy()) return 'info';
+    return 'success';
   };
   const otaProgress = () => {
     const o = ota();
@@ -505,18 +529,12 @@ export default function App() {
           <div class="card-header">
             <span class="card-title">Firmware</span>
             <Show when={ota()}>
-              <void-badge
-                color={
-                  ota()!.state === 'failed' ? 'error' :
-                  ota()!.state === 'up_to_date' ? 'success' :
-                  ota()!.state === 'swap_pending' ? 'caution' :
-                  otaBusy() ? 'default' : 'default'
-                }>
-                {ota()!.state.replace('_', ' ')}
+              <void-badge color={otaBadgeColor()} data-testid="ota-badge">
+                {otaBadgeLabel()}
               </void-badge>
             </Show>
           </div>
-          <div class="card-body">
+          <div class="card-body ota-body">
             <div class="stat-grid">
               <void-stat size="sm" label="Running"
                 value={ota()?.running_version || '—'}
@@ -536,6 +554,13 @@ export default function App() {
                   data-testid="ota-progress" />
               </div>
             </Show>
+            <Show when={ota()?.state === 'update_available'}>
+              <void-alert color="caution" variant="subtle"
+                data-testid="ota-available-alert">
+                Version {ota()!.available_version} is available.
+                Click Install to download and apply the update — the device will reboot.
+              </void-alert>
+            </Show>
             <Show when={ota()?.state === 'failed' && ota()!.error}>
               <void-alert color="error" variant="subtle"
                 data-testid="ota-error">
@@ -549,15 +574,30 @@ export default function App() {
             </Show>
           </div>
           <div class="card-actions">
-            <void-button
-              size="lg" variant="filled" color="default"
-              disabled={otaBusy() || undefined}
-              data-testid="ota-check"
-              onClick={otaCheck}>
-              <Show when={otaBusy()} fallback="Check for updates">
-                <void-spinner size="sm" /> Checking
-              </Show>
-            </void-button>
+            <Show when={ota()?.state === 'update_available'} fallback={
+              <void-button
+                size="lg" variant="filled" color="default"
+                disabled={otaBusy() || undefined}
+                data-testid="ota-check"
+                onClick={otaCheck}>
+                <Show when={otaBusy()} fallback="Check for updates">
+                  <void-spinner size="sm" /> Checking
+                </Show>
+              </void-button>
+            }>
+              <void-button
+                size="lg" variant="filled" color="caution"
+                data-testid="ota-install"
+                onClick={otaInstall}>
+                Install {ota()!.available_version}
+              </void-button>
+              <void-button
+                size="lg" variant="outline" color="default"
+                data-testid="ota-check"
+                onClick={otaCheck}>
+                Check again
+              </void-button>
+            </Show>
           </div>
         </section>
       </main>
