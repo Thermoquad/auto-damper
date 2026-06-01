@@ -182,6 +182,56 @@ struct fetch_ctx {
   char location[256];
 };
 
+/* Track Location across header parsing. http_parser invokes
+ * on_header_field/on_header_value with chunks; we accumulate field
+ * name fragments, watch for the field-to-value transition, and copy
+ * the value when the field is "location". */
+static struct fetch_ctx *current_ctx;
+static char hdr_field_buf[32];
+static enum { HDR_NONE, HDR_FIELD, HDR_VALUE } hdr_state;
+static bool capturing_location;
+
+static int on_header_field(struct http_parser *p, const char *at, size_t len)
+{
+  ARG_UNUSED(p);
+  if (hdr_state != HDR_FIELD) {
+    /* Transition into a new field — reset the accumulator. */
+    hdr_field_buf[0] = '\0';
+    capturing_location = false;
+    hdr_state = HDR_FIELD;
+  }
+  size_t pos = strlen(hdr_field_buf);
+  size_t take = MIN(len, sizeof(hdr_field_buf) - 1 - pos);
+  memcpy(hdr_field_buf + pos, at, take);
+  hdr_field_buf[pos + take] = '\0';
+  return 0;
+}
+
+static int on_header_value(struct http_parser *p, const char *at, size_t len)
+{
+  ARG_UNUSED(p);
+  if (hdr_state != HDR_VALUE) {
+    /* Field is now complete; decide whether to capture the value. */
+    hdr_state = HDR_VALUE;
+    capturing_location = (strcasecmp(hdr_field_buf, "location") == 0);
+    if (capturing_location && current_ctx) {
+      current_ctx->location[0] = '\0';
+    }
+  }
+  if (capturing_location && current_ctx) {
+    size_t pos = strlen(current_ctx->location);
+    size_t take = MIN(len, sizeof(current_ctx->location) - 1 - pos);
+    memcpy(current_ctx->location + pos, at, take);
+    current_ctx->location[pos + take] = '\0';
+  }
+  return 0;
+}
+
+static const struct http_parser_settings ota_parser_settings = {
+  .on_header_field = on_header_field,
+  .on_header_value = on_header_value,
+};
+
 static void scan_location(struct fetch_ctx *ctx, const uint8_t *buf, size_t len)
 {
   if (!buf || len == 0 || ctx->location[0]) {
@@ -305,33 +355,28 @@ static int http_get(const char *host, const char *port, const char *url,
       .response = response_cb,
       .recv_buf = recv_buf,
       .recv_buf_len = sizeof(recv_buf),
+      /* Hook into the response header parser so we can capture
+       * Location as it's parsed. recv_buf-based post-scanning was
+       * unreliable because http_client compacts the buffer as the
+       * parser consumes headers. */
+      .http_cb = &ota_parser_settings,
   };
 
   ctx->status = 0;
   ctx->location[0] = '\0';
+  /* Parser callbacks reach into current_ctx — set the global for the
+   * duration of the request, then clear it after. Single-threaded
+   * OTA use means no concurrent-request hazard. */
+  current_ctx = ctx;
+  hdr_field_buf[0] = '\0';
+  hdr_state = HDR_NONE;
+  capturing_location = false;
   int rc = http_client_req(sock, &req, OTA_REQ_TIMEOUT_MS, ctx);
+  current_ctx = NULL;
   zsock_close(sock);
   if (rc < 0) {
     LOG_ERR("http_client_req: %d", rc);
     return rc;
-  }
-
-  /* If response_cb didn't capture the Location (no body fragment fired
-   * during header-only 30x responses), scan the buffer directly here.
-   * recv_buf was zeroed so strnlen + scan stop at the actual data. */
-  if (ctx->location[0] == '\0') {
-    size_t used = strnlen((char *)recv_buf, sizeof(recv_buf));
-    LOG_INF("post-req recv_buf used=%u (status=%d)", (unsigned)used, ctx->status);
-    /* Direct printk so the dump always reaches the wire — printf
-     * variants of LOG_HEXDUMP can get stripped by minimal logging. */
-    printk("---BEGIN recv_buf (%u bytes)---\n", (unsigned)used);
-    for (size_t i = 0; i < used && i < 1024; i++) {
-      char c = (char)recv_buf[i];
-      printk("%c", (c >= 32 && c < 127) || c == '\r' || c == '\n' ? c : '.');
-    }
-    printk("\n---END recv_buf---\n");
-    scan_location(ctx, recv_buf, used);
-    LOG_INF("scan result: location='%s'", ctx->location);
   }
 
   if (status_out) {
