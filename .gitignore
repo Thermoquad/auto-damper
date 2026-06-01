@@ -21,6 +21,10 @@ web/
 # Debug
 cmsis-dap.cfg
 
+# MCUboot signing private keys — never commit
+keys/*.pem
+!keys/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

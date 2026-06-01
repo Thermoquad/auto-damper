@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* DT overlay applied to MCUboot's build. Without this MCUboot sees
+ * only the board's default partition table (1MB code + 3MB storage)
+ * and can't find the boot/slot/storage partition labels it needs for
+ * its chosen nodes. We give MCUboot the same MCUboot-aware partition
+ * table the auto-damper image uses, so both halves agree on flash
+ * layout. */
+#include <raspberrypi/partitions_4M_sysbuild.dtsi>

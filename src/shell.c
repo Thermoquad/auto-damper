@@ -5,7 +5,9 @@
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/zbus/zbus.h>
+#include <bootutil/bootutil_public.h>
 
 #include <auto_damper/damper.h>
 #include <auto_damper/zbus.h>
@@ -792,6 +794,72 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
                   cmd_ble_raw, 2, 15),
     SHELL_SUBCMD_SET_END);
 
+/* OTA — Phase 2/4: trigger a slot1 swap on next boot. Verifies that
+ * an image previously written to slot1 (manually for Phase 2, via
+ * HTTPS download for Phase 4) is recognized by MCUboot and swapped
+ * in. boot_set_pending() writes the swap_info trailer byte that
+ * tells MCUboot "test this image"; on next boot MCUboot performs
+ * the swap. Without subsequent boot_write_img_confirmed() the swap
+ * reverts on the second reset. */
+static int cmd_ota_test_swap(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+
+  int rc = boot_set_pending(0);
+  if (rc != 0) {
+    shell_error(sh, "boot_set_pending failed: %d", rc);
+    return rc;
+  }
+  shell_print(sh, "Slot1 marked for TEST swap; rebooting in 2s...");
+  k_sleep(K_MSEC(2000));
+  sys_reboot(SYS_REBOOT_COLD);
+  return 0;
+}
+
+static int cmd_ota_confirm(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+
+  int rc = boot_set_confirmed();
+  if (rc != 0) {
+    shell_error(sh, "boot_set_confirmed failed: %d", rc);
+    return rc;
+  }
+  shell_print(sh, "Current image confirmed (will not revert on next boot)");
+  return 0;
+}
+
+static int cmd_ota_status(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+
+  int swap_type = boot_swap_type();
+  const char *swap_name =
+      swap_type == BOOT_SWAP_TYPE_NONE   ? "none (running confirmed image)" :
+      swap_type == BOOT_SWAP_TYPE_TEST   ? "test (will swap on reboot)" :
+      swap_type == BOOT_SWAP_TYPE_PERM   ? "perm (will swap permanently on reboot)" :
+      swap_type == BOOT_SWAP_TYPE_REVERT ? "revert (running test image, will revert)" :
+      swap_type == BOOT_SWAP_TYPE_FAIL   ? "fail (swap failed)" :
+                                           "unknown";
+  shell_print(sh, "Boot swap type: %d (%s)", swap_type, swap_name);
+  return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+    ota_cmds,
+    SHELL_CMD(test_swap, NULL,
+              "Trigger slot1 -> slot0 test swap on next boot",
+              cmd_ota_test_swap),
+    SHELL_CMD(confirm, NULL,
+              "Mark currently-running image as confirmed (cancels rollback)",
+              cmd_ota_confirm),
+    SHELL_CMD(status, NULL, "Show whether running image is confirmed",
+              cmd_ota_status),
+    SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
     damper_cmds,
     SHELL_CMD(status, NULL, "Show damper status and config", cmd_status),
@@ -805,6 +873,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
                   cmd_heater, 1, 1),
     SHELL_CMD(ble, &ble_cmds, "BLE heater commands", NULL),
     SHELL_CMD(wifi, &wifi_cmds, "WiFi commands", NULL),
+    SHELL_CMD(ota, &ota_cmds, "Firmware update commands", NULL),
     SHELL_CMD(test, NULL, "Run WiFi+BLE coex test", cmd_test_wifi_ble),
     SHELL_SUBCMD_SET_END);
 

@@ -1,11 +1,21 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include <raspberrypi/partitions_4M_storage.dtsi>
+/* MCUboot partition layout: 64KB bootloader + 832KB primary slot +
+ * 832KB secondary slot + 2.3MB storage. Defined upstream by Beechwoods
+ * for sysbuild flows. */
+#include <raspberrypi/partitions_4M_sysbuild.dtsi>
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
 	chosen {
 		zephyr,bt-hci = &bt_hci;
+		/* Link the auto-damper application into slot0 (image-0).
+		 * Without this, Zephyr defaults to FLASH_LOAD_OFFSET=0 which
+		 * positions the image at the bottom of flash (where MCUboot
+		 * lives). The MCUboot-aware sysbuild partition table omits
+		 * code_partition entirely, so we must point at the slot
+		 * explicitly. */
+		zephyr,code-partition = &slot0_partition;
 	};
 
 	servo: servo {

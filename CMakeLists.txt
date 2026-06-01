@@ -84,3 +84,12 @@ file(WRITE ${GEN_DIR}/web_assets.h
   "#endif\n")
 
 target_compile_definitions(app PRIVATE WEB_ASSET_COUNT=${ASSET_INDEX})
+
+# MCUboot bootutil_public library — provides boot_set_pending /
+# boot_write_img_confirmed / boot_is_img_confirmed for the OTA shell
+# command and the runtime confirm logic in Phase 5. The library is
+# created by bootloader/mcuboot/boot/bootutil/zephyr/CMakeLists.txt
+# when CONFIG_MCUBOOT_BOOTUTIL_LIB=y.
+if(CONFIG_MCUBOOT_BOOTUTIL_LIB)
+  target_link_libraries(app PRIVATE MCUBOOT_BOOTUTIL)
+endif()

@@ -3,7 +3,11 @@
 version: "3"
 
 env:
-  FIRMWARE_IMG: build/zephyr/zephyr.hex
+  # Sysbuild produces a multi-image tree under build/. We flash MCUboot
+  # (at 0x00000) and the signed auto-damper image (at slot0 / 0x10000)
+  # in one OpenOCD invocation.
+  MCUBOOT_IMG: build/mcuboot/zephyr/zephyr.hex
+  FIRMWARE_IMG: build/auto-damper/zephyr/zephyr.signed.hex
   RP_CFG: ../../tools/installs/openocd/share/openocd/scripts/target/rp2350.cfg
   BOARD: rpi_pico2/rp2350a/m33/w
   PROBE_USB_ID: 2e8a:000c
@@ -11,15 +15,26 @@ env:
 
 tasks:
   build-firmware:
-    desc: Build the auto-damper firmware
-    cmd: west build -b $BOARD
+    desc: Build the auto-damper firmware (sysbuild + MCUboot)
+    cmd: west build -b $BOARD --sysbuild
 
   rebuild-firmware:
     desc: Clean and rebuild the auto-damper firmware
-    cmd: west build -b $BOARD -p always
+    cmd: west build -b $BOARD --sysbuild -p always
 
   flash-firmware:
-    desc: Flash firmware to Pico 2W via debug probe
+    desc: Flash MCUboot + signed app to Pico 2W via debug probe
+    deps:
+      - task: build-firmware
+      - task: setup-flash-config
+    preconditions:
+      - test -f $MCUBOOT_IMG
+      - test -f $FIRMWARE_IMG
+    cmds:
+      - ../../bin/openocd -f $OCD_CFG -f $RP_CFG -c "program $MCUBOOT_IMG verify" -c "program $FIRMWARE_IMG verify reset exit"
+
+  flash-app:
+    desc: Flash only the signed app (keep existing MCUboot — fast path for app-only changes)
     deps:
       - task: build-firmware
       - task: setup-flash-config
@@ -71,8 +86,8 @@ tasks:
       - app.overlay
       - CMakeLists.txt
     cmds:
-      - west build
-      - ../../bin/openocd -f $OCD_CFG -f $RP_CFG -c "program $FIRMWARE_IMG verify reset exit"
+      - west build --sysbuild
+      - ../../bin/openocd -f $OCD_CFG -f $RP_CFG -c "program $MCUBOOT_IMG verify" -c "program $FIRMWARE_IMG verify reset exit"
 
   setup-flash-config:
     desc: Create an openocd config that will flash firmware via a specific Pico debug probe
