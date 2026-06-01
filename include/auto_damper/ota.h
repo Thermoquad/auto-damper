@@ -81,4 +81,17 @@ int ota_revert(ota_progress_cb cb);
 bool ota_auto_revert_enabled(void);
 int ota_set_auto_revert_enabled(bool enabled);
 
+/* OTA worker thread enqueueing. Used by the WS and REST layers to
+ * trigger long-running operations without blocking their own request
+ * handlers. Progress is broadcast over the websocket layer to all
+ * connected clients. */
+enum ota_worker_op {
+  OTA_WORKER_CHECK,
+  OTA_WORKER_INSTALL,
+  OTA_WORKER_REVERT,
+};
+/* Returns 0 if the operation was enqueued, -EBUSY if another OTA
+ * operation is already in flight. */
+int ota_worker_request(enum ota_worker_op op);
+
 #endif

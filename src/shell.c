@@ -838,6 +838,10 @@ static int cmd_ota_status(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
 
+  char running[16], prev[16];
+  ota_get_running_version(running, sizeof(running));
+  ota_get_previous_version(prev, sizeof(prev));
+
   int swap_type = boot_swap_type();
   const char *swap_name =
       swap_type == BOOT_SWAP_TYPE_NONE   ? "none (running confirmed image)" :
@@ -846,7 +850,11 @@ static int cmd_ota_status(const struct shell *sh, size_t argc, char **argv)
       swap_type == BOOT_SWAP_TYPE_REVERT ? "revert (running test image, will revert)" :
       swap_type == BOOT_SWAP_TYPE_FAIL   ? "fail (swap failed)" :
                                            "unknown";
-  shell_print(sh, "Boot swap type: %d (%s)", swap_type, swap_name);
+  shell_print(sh, "Running:      %s", running);
+  shell_print(sh, "Previous:     %s", prev[0] ? prev : "(none)");
+  shell_print(sh, "Auto-revert:  %s",
+              ota_auto_revert_enabled() ? "on" : "off");
+  shell_print(sh, "Boot swap:    %d (%s)", swap_type, swap_name);
   return 0;
 }
 
@@ -881,6 +889,28 @@ static void ota_shell_progress(const struct ota_progress *p)
   }
 }
 
+static int cmd_ota_check(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+  ota_shell = sh;
+  int rc = ota_check(ota_shell_progress);
+  ota_shell = NULL;
+  /* ota_check returns -EAGAIN for "up to date" which isn't really an
+   * error for the user; collapse it to 0 so the shell shows success. */
+  return (rc == -EAGAIN) ? 0 : rc;
+}
+
+static int cmd_ota_install(const struct shell *sh, size_t argc, char **argv)
+{
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+  ota_shell = sh;
+  int rc = ota_install_pending(ota_shell_progress);
+  ota_shell = NULL;
+  return rc;
+}
+
 static int cmd_ota_update(const struct shell *sh, size_t argc, char **argv)
 {
   ARG_UNUSED(argc);
@@ -888,8 +918,9 @@ static int cmd_ota_update(const struct shell *sh, size_t argc, char **argv)
   ota_shell = sh;
   int rc = ota_check(ota_shell_progress);
   if (rc == 0) {
-    /* Shell command path bypasses the confirm step - it's a developer
-     * tool. The web UI uses the two-stage flow. */
+    /* Convenience shortcut: check + install in one command. The web
+     * UI uses the two-stage flow with explicit confirm; the separate
+     * shell `check` and `install` commands above mirror that flow. */
     ota_install_pending(ota_shell_progress);
   }
   ota_shell = NULL;
@@ -943,23 +974,30 @@ static int cmd_ota_auto_revert(const struct shell *sh, size_t argc,
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
     ota_cmds,
+    SHELL_CMD(check, NULL,
+              "Fetch release manifest and report whether an update is available",
+              cmd_ota_check),
+    SHELL_CMD(install, NULL,
+              "Download and apply the update reported by `check`",
+              cmd_ota_install),
     SHELL_CMD(update, NULL,
-              "Check for and install firmware updates from GitHub Releases",
+              "Convenience: check + install in one step",
               cmd_ota_update),
-    SHELL_CMD(test_swap, NULL,
-              "Trigger slot1 -> slot0 test swap on next boot",
-              cmd_ota_test_swap),
-    SHELL_CMD(confirm, NULL,
-              "Mark currently-running image as confirmed (cancels rollback)",
-              cmd_ota_confirm),
-    SHELL_CMD(status, NULL, "Show whether running image is confirmed",
-              cmd_ota_status),
     SHELL_CMD(revert, NULL,
               "Roll back to the previous image preserved in slot1",
               cmd_ota_revert),
+    SHELL_CMD(confirm, NULL,
+              "Mark currently-running image as confirmed (cancels rollback)",
+              cmd_ota_confirm),
+    SHELL_CMD(status, NULL,
+              "Show running/previous versions, auto-revert, and swap state",
+              cmd_ota_status),
     SHELL_CMD_ARG(auto_revert, NULL,
                   "Toggle auto-revert watchdog: damper ota auto_revert [on|off]",
                   cmd_ota_auto_revert, 1, 1),
+    SHELL_CMD(test_swap, NULL,
+              "Trigger slot1 -> slot0 test swap on next boot (dev)",
+              cmd_ota_test_swap),
     SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(

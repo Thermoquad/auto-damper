@@ -6,6 +6,7 @@
 #include <zephyr/net/http/service.h>
 #include <zephyr/net/websocket.h>
 #include <zephyr/zbus/zbus.h>
+#include <bootutil/bootutil_public.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -303,14 +304,11 @@ static char ws_cmd_buf[WS_BUF_SIZE];
 static K_SEM_DEFINE(ws_ota_trigger, 0, 1);
 static char ws_ota_progress_buf[512];
 
-/* What ota.check / ota.install / ota.revert set so the worker knows
- * which to run. */
-static enum {
-  OTA_REQ_NONE,
-  OTA_REQ_CHECK,
-  OTA_REQ_INSTALL,
-  OTA_REQ_REVERT,
-} ws_ota_request;
+/* Set by ota_worker_request() and consumed by the worker thread.
+ * ws_ota_pending gates the value so we can distinguish "no request"
+ * from a valid CHECK (value 0). */
+static enum ota_worker_op ws_ota_request;
+static bool ws_ota_pending;
 
 static const char *ws_ota_state_str(enum ota_state s)
 {
@@ -386,16 +384,24 @@ static void ws_ota_thread_fn(void *a, void *b, void *c)
   ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
   while (1) {
     k_sem_take(&ws_ota_trigger, K_FOREVER);
-    int req = ws_ota_request;
-    ws_ota_request = OTA_REQ_NONE;
-    if (req == OTA_REQ_CHECK) {
-      ota_check(ws_ota_progress_cb);
-    } else if (req == OTA_REQ_INSTALL) {
-      ota_install_pending(ws_ota_progress_cb);
-    } else if (req == OTA_REQ_REVERT) {
-      ota_revert(ws_ota_progress_cb);
+    if (!ws_ota_pending) continue;
+    enum ota_worker_op op = ws_ota_request;
+    ws_ota_pending = false;
+    switch (op) {
+    case OTA_WORKER_CHECK:   ota_check(ws_ota_progress_cb); break;
+    case OTA_WORKER_INSTALL: ota_install_pending(ws_ota_progress_cb); break;
+    case OTA_WORKER_REVERT:  ota_revert(ws_ota_progress_cb); break;
     }
   }
+}
+
+int ota_worker_request(enum ota_worker_op op)
+{
+  if (ws_ota_pending) return -EBUSY;
+  ws_ota_request = op;
+  ws_ota_pending = true;
+  k_sem_give(&ws_ota_trigger);
+  return 0;
 }
 
 /* 8KB stack matches the shell where the OTA already runs successfully -
@@ -722,34 +728,37 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     /* Lightweight check - fetch manifest, compare versions, broadcast
      * the result. Does NOT install. User then clicks "Install" which
      * triggers ota.install. */
-    if (k_sem_count_get(&ws_ota_trigger) > 0) {
-      ws_send_result(slot, false, "ota already in progress");
-      return;
-    }
-    ws_ota_request = OTA_REQ_CHECK;
-    k_sem_give(&ws_ota_trigger);
-    ws_send_result(slot, true, NULL);
+    int rc = ota_worker_request(OTA_WORKER_CHECK);
+    ws_send_result(slot, rc == 0,
+                   rc == 0 ? NULL : "ota already in progress");
 
   } else if (strcmp(type, "ota.install") == 0) {
     /* User confirmed the update - download, verify, swap, reboot. */
-    if (k_sem_count_get(&ws_ota_trigger) > 0) {
-      ws_send_result(slot, false, "ota already in progress");
-      return;
-    }
-    ws_ota_request = OTA_REQ_INSTALL;
-    k_sem_give(&ws_ota_trigger);
-    ws_send_result(slot, true, NULL);
+    int rc = ota_worker_request(OTA_WORKER_INSTALL);
+    ws_send_result(slot, rc == 0,
+                   rc == 0 ? NULL : "ota already in progress");
 
   } else if (strcmp(type, "ota.revert") == 0) {
     /* Manual revert. Same worker, same reboot exit - the only
      * differences from install are no download and slot1 becomes
      * the new slot0. */
-    if (k_sem_count_get(&ws_ota_trigger) > 0) {
-      ws_send_result(slot, false, "ota already in progress");
+    int rc = ota_worker_request(OTA_WORKER_REVERT);
+    ws_send_result(slot, rc == 0,
+                   rc == 0 ? NULL : "ota already in progress");
+
+  } else if (strcmp(type, "ota.confirm") == 0) {
+    /* Synchronous - boot_set_confirmed() writes one trailer byte and
+     * returns. No worker dispatch needed. */
+    int rc = boot_set_confirmed();
+    if (rc != 0) {
+      ws_send_result(slot, false, "boot_set_confirmed failed");
       return;
     }
-    ws_ota_request = OTA_REQ_REVERT;
-    k_sem_give(&ws_ota_trigger);
+    /* Push a fresh snapshot so the UI updates its swap-type / state. */
+    struct ota_progress p = { .state = OTA_STATE_IDLE };
+    ota_get_running_version(p.running_version,
+                            sizeof(p.running_version));
+    ws_ota_progress_cb(&p);
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "ota.set_auto_revert") == 0) {
