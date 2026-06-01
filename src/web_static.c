@@ -28,7 +28,7 @@ static const uint8_t index_html_gz[] = {
 #endif
 
 //////////////////////////////////////////////////////////////
-// Index HTML Resource (no-cache — references hashed assets)
+// Index HTML Resource (no-cache - references hashed assets)
 //////////////////////////////////////////////////////////////
 
 #if HAS_INDEX_HTML

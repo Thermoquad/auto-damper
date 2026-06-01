@@ -92,7 +92,7 @@ static void ws_send_to(int slot, const char *json, int len)
 }
 
 //////////////////////////////////////////////////////////////
-// Zbus Subscriber — Push Updates
+// Zbus Subscriber - Push Updates
 //////////////////////////////////////////////////////////////
 
 ZBUS_SUBSCRIBER_DEFINE(ws_sub, 8);
@@ -357,7 +357,7 @@ static void ws_ota_thread_fn(void *a, void *b, void *c)
   }
 }
 
-/* 8KB stack matches the shell where the OTA already runs successfully —
+/* 8KB stack matches the shell where the OTA already runs successfully -
  * mbedTLS handshake is the largest consumer. */
 K_THREAD_DEFINE(ws_ota_tid, 8192, ws_ota_thread_fn, NULL, NULL, NULL,
                 7, 0, 0);
@@ -673,7 +673,7 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     return;
 
   } else if (strcmp(type, "ota.check") == 0) {
-    /* Lightweight check — fetch manifest, compare versions, broadcast
+    /* Lightweight check - fetch manifest, compare versions, broadcast
      * the result. Does NOT install. User then clicks "Install" which
      * triggers ota.install. */
     if (k_sem_count_get(&ws_ota_trigger) > 0) {
@@ -685,7 +685,7 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     ws_send_result(slot, true, NULL);
 
   } else if (strcmp(type, "ota.install") == 0) {
-    /* User confirmed the update — download, verify, swap, reboot. */
+    /* User confirmed the update - download, verify, swap, reboot. */
     if (k_sem_count_get(&ws_ota_trigger) > 0) {
       ws_send_result(slot, false, "ota already in progress");
       return;
@@ -711,7 +711,7 @@ static void ws_recv_handler(struct k_work *work)
   int slot = (int)(client - ws_clients);
 
   /* On the first tick after handshake, push the OTA snapshot so the
-   * UI has the running version on initial load — without this the
+   * UI has the running version on initial load - without this the
    * frontend would have to wait for an idle ota.status response which
    * could race with the WS open event. */
   if (slot >= 0 && slot < WS_MAX_CLIENTS && client->sock >= 0 &&

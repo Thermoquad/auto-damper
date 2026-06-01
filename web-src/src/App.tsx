@@ -51,7 +51,7 @@ export default function App() {
     else queueMicrotask(sync);
   };
 
-  /** Union of every heater name we've ever seen — connected, scanned,
+  /** Union of every heater name we've ever seen - connected, scanned,
    *  or historical. Used for the damper's "Heater ID" config select so
    *  the user can bind the damper to a heater that isn't currently in
    *  range. */
@@ -65,7 +65,7 @@ export default function App() {
     });
   });
 
-  /** Connected heaters sorted by name — the dropdown's option list.
+  /** Connected heaters sorted by name - the dropdown's option list.
    *  The equality check returns the same array reference when the
    *  set of names is unchanged across telemetry updates, so the
    *  combobox doesn't re-render and close its popup. */
@@ -183,7 +183,7 @@ export default function App() {
   const loadConfig = () => {
     send({ type: 'damper.status' });
     send({ type: 'heaters.list' });
-    /* OTA snapshot arrives via server-pushed initial message — no
+    /* OTA snapshot arrives via server-pushed initial message - no
      * need to query. */
   };
   createEffect(() => { if (connected()) loadConfig(); });
@@ -192,7 +192,7 @@ export default function App() {
   const otaInstall = () => sendCmd({ type: 'ota.install' });
 
   /* Operations the device is actively running. Excludes
-   * update_available — that's a wait-for-user state, not "busy". */
+   * update_available - that's a wait-for-user state, not "busy". */
   const otaBusy = () => {
     const s = ota()?.state;
     return s === 'checking' || s === 'downloading' ||
@@ -202,7 +202,7 @@ export default function App() {
   /* Map the wire state to the user-facing badge label. We show the
    * skeleton placeholder when the state genuinely doesn't tell us
    * anything yet: before any message arrives, in the idle pre-check
-   * state, and *while* a check is in flight — until the manifest
+   * state, and *while* a check is in flight - until the manifest
    * comes back we can't honestly call ourselves Current or Behind. */
   const otaBadgeVisible = () => {
     const s = ota()?.state;
@@ -415,7 +415,7 @@ export default function App() {
             }>
               <Show when={selectedHeater()!.error}>
                 <void-alert color="error" variant="subtle">
-                  E{selectedHeater()!.error} — {heaterError(selectedHeater()!.error)}
+                  E{selectedHeater()!.error} - {heaterError(selectedHeater()!.error)}
                 </void-alert>
               </Show>
               <Show when={!selectedHeater()!.connected}>
@@ -547,10 +547,10 @@ export default function App() {
           <div class="card-body ota-body">
             <div class="stat-grid">
               <void-stat size="sm" label="Running"
-                value={ota()?.running_version || '—'}
+                value={ota()?.running_version || '-'}
                 data-testid="ota-running" />
               <void-stat size="sm" label="Latest"
-                value={ota()?.available_version || '—'}
+                value={ota()?.available_version || '-'}
                 data-testid="ota-available" />
             </div>
             <Show when={otaBusy() && ota()!.bytes_total > 0}>
@@ -568,7 +568,7 @@ export default function App() {
               <void-alert color="caution" variant="subtle"
                 data-testid="ota-available-alert">
                 Version {ota()!.available_version} is available.
-                Click Install to download and apply the update — the device will reboot.
+                Click Install to download and apply the update. The device will reboot.
               </void-alert>
             </Show>
             <Show when={ota()?.state === 'failed' && ota()!.error}>

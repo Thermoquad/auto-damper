@@ -55,7 +55,7 @@ static bool scanning;
 // heater_ble_connect() picks it up; it stays active across
 // disconnects when auto_reconnect is true. Discovery / subscribe
 // param structs live in the slot because the GATT subsystem retains
-// pointers to them for the duration of an operation — sharing
+// pointers to them for the duration of an operation - sharing
 // across slots would corrupt in-flight discoveries on other heaters.
 //////////////////////////////////////////////////////////////
 
@@ -195,7 +195,7 @@ static void release_slot(struct heater_slot *s)
 
 static void publish_heater_state(void)
 {
-  /* struct heater_states is ~1.2KB — too large to stack-allocate in
+  /* struct heater_states is ~1.2KB - too large to stack-allocate in
    * a BT host callback. Claim the channel's storage and write in
    * place; finish + notify dispatches to observers. */
   if (zbus_chan_claim(&heater_states_chan, K_MSEC(100)) != 0) {
@@ -617,7 +617,7 @@ static K_WORK_DELAYABLE_DEFINE(rescan_work, rescan_handler);
 
 static void schedule_rescan(void)
 {
-  /* Rescan periodically regardless of currently-connected slots —
+  /* Rescan periodically regardless of currently-connected slots -
    * new heaters that come into range should be auto-connected too. */
   k_work_schedule(&rescan_work, K_SECONDS(RESCAN_INTERVAL_SEC));
 }
@@ -943,7 +943,7 @@ int heater_ble_send_power(const char *target, bool on)
     return -ENOTCONN;
   }
 
-  /* CC 0xA1 is a TOGGLE — it ignores the requested direction. Guard
+  /* CC 0xA1 is a TOGGLE - it ignores the requested direction. Guard
    * against redundant sends using the slot's cached telemetry. Treat
    * RUNNING / STARTING as "on", OFF / SHUTTING_DOWN as "off". */
   bool is_on = s->data.power == HEATER_POWER_RUNNING ||
@@ -956,7 +956,7 @@ int heater_ble_send_power(const char *target, bool on)
   int pkt_len;
 
   if (!on && s->data.mode == HEATER_MODE_FAN && s->protocol->encode_set_mode) {
-    /* CC fan mode needs 0xA4 — the generic toggle (0xA1) would switch
+    /* CC fan mode needs 0xA4 - the generic toggle (0xA1) would switch
        to heating instead of off. */
     pkt_len = s->protocol->encode_set_mode(buf, sizeof(buf), HEATER_MODE_FAN);
   } else {

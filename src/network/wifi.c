@@ -21,7 +21,7 @@
 extern whd_interface_t airoc_wifi_get_whd_interface(void);
 
 //////////////////////////////////////////////////////////////
-// Radio Status Channel — owned by wifi.c, also published from
+// Radio Status Channel - owned by wifi.c, also published from
 // heater_ble.c via zbus_chan_claim/finish for the ble_* fields.
 //////////////////////////////////////////////////////////////
 
@@ -114,7 +114,7 @@ static void wifi_event_handler(struct net_mgmt_event_callback *cb,
 
       if (status &&
           status->conn_status == WIFI_STATUS_CONN_WRONG_PASSWORD) {
-        LOG_ERR("Wrong password — disabling auto-connect");
+        LOG_ERR("Wrong password - disabling auto-connect");
         wifi_state.auto_connect = false;
       }
     }

@@ -137,7 +137,7 @@ static int sendall(int sock, const void *buf, size_t len)
 /* Read one CRLF-terminated line into 'line' (NUL-terminated, CRLF
  * stripped). Returns line length, 0 on connection close, or -errno.
  *
- * Lines longer than the buffer are silently truncated — we keep
+ * Lines longer than the buffer are silently truncated - we keep
  * reading until CRLF so the stream stays aligned, but discard the
  * excess. GitHub's content-security-policy header is ~3KB and we
  * don't need to parse it; only Location and the status line matter.
@@ -208,7 +208,7 @@ static int tls_open(const char *host, const char *port)
   return sock;
 }
 
-/* Send a minimal HTTP/1.0 GET. HTTP/1.0 keeps things simple — server
+/* Send a minimal HTTP/1.0 GET. HTTP/1.0 keeps things simple - server
  * closes the connection after the body which makes EOF the natural
  * "end of body" signal. SLIT macro avoids manual byte counts on
  * string literals (a 33-vs-34 off-by-one truncated the final \n on
@@ -369,7 +369,7 @@ static int fetch(const char *initial_url,
         zsock_close(sock);
         return -errno;
       }
-      if (n == 0) break;  /* EOF — body complete (HTTP/1.0) */
+      if (n == 0) break;  /* EOF - body complete (HTTP/1.0) */
 
       if (body_buf) {
         size_t take = MIN((size_t)n, body_cap - *body_len_out);
@@ -408,9 +408,9 @@ static int fetch(const char *initial_url,
 // Split into two phases so the user can confirm before the device
 // actually installs anything:
 //
-//   1. ota_check()           — fetch manifest, compare versions, set
+//   1. ota_check()           - fetch manifest, compare versions, set
 //                              cached_manifest if newer version exists
-//   2. ota_install_pending() — re-validate cache freshness, then
+//   2. ota_install_pending() - re-validate cache freshness, then
 //                              download, verify, swap, reboot
 //
 // Between the two phases the device shows UPDATE_AVAILABLE state.
@@ -617,7 +617,7 @@ int ota_install_pending(ota_progress_cb cb)
     return rc;
   }
   emit(cb, &progress, OTA_STATE_SWAP_PENDING);
-  LOG_INF("Update %s ready — rebooting", progress.available_version);
+  LOG_INF("Update %s ready - rebooting", progress.available_version);
   k_sleep(K_MSEC(1500));
   sys_reboot(SYS_REBOOT_COLD);
   return 0;

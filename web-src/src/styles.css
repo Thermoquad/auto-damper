@@ -1,6 +1,6 @@
 /*
  * Page layout and structural CSS only. Component appearance is owned by
- * @voidable/theme — never override void-* elements with classes.
+ * @voidable/theme - never override void-* elements with classes.
  */
 
 *, *::before, *::after {
@@ -64,7 +64,7 @@ body {
   padding: var(--void-space-5);
 }
 
-/* Cards (custom layout container — interior content is Voidable components) */
+/* Cards (custom layout container - interior content is Voidable components) */
 .card {
   border: 1px solid var(--void-color-border);
   border-radius: var(--void-radius-lg);
@@ -90,7 +90,7 @@ body {
   padding: var(--void-space-5);
 }
 
-/* OTA card stacks stat-grid + progress + alerts as siblings — needs
+/* OTA card stacks stat-grid + progress + alerts as siblings - needs
  * gap so the rebooting / available banners don't touch the version stats. */
 .ota-body {
   display: flex;
@@ -177,7 +177,7 @@ void-combobox .void-combobox-input {
   padding-right: var(--void-space-8);
 }
 
-/* Heater controls — unified container for every labelled control group
+/* Heater controls - unified container for every labelled control group
  * (Power, Mode, Power Level, Min/Max Temp, Altitude). One layout, one
  * spacing rule. */
 .heater-controls {
@@ -201,7 +201,7 @@ void-combobox .void-combobox-input {
   gap: var(--void-space-2);
 }
 
-/* Damper Angle Controls — slider stretches full-width, other controls centered */
+/* Damper Angle Controls - slider stretches full-width, other controls centered */
 .damper-angle-controls {
   flex-direction: column;
   align-items: stretch;
@@ -223,7 +223,7 @@ void-combobox .void-combobox-input {
   cursor: pointer;
 }
 
-/* Damper Config tab — same layout pattern as .heater-controls */
+/* Damper Config tab - same layout pattern as .heater-controls */
 .damper-config {
   display: flex;
   flex-direction: column;
@@ -237,7 +237,7 @@ void-combobox .void-combobox-input {
   font-style: italic;
 }
 
-/* Heater mode controls — sits below card-body, separated by the card's natural border */
+/* Heater mode controls - sits below card-body, separated by the card's natural border */
 .heater-mode-controls {
   display: flex;
   flex-direction: column;
@@ -245,7 +245,7 @@ void-combobox .void-combobox-input {
   padding: 0 var(--void-space-5) var(--void-space-5);
 }
 
-/* OTA progress block — byte counter sits above void-progress. */
+/* OTA progress block - byte counter sits above void-progress. */
 .ota-progress {
   display: flex;
   flex-direction: column;

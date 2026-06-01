@@ -113,7 +113,7 @@ struct heater_command {
 ZBUS_CHAN_DECLARE(heater_command_chan);
 
 //////////////////////////////////////////////////////////////
-// Heater Devices Channel — scan results (discovered, not connected)
+// Heater Devices Channel - scan results (discovered, not connected)
 //////////////////////////////////////////////////////////////
 
 #define HEATER_DEVICES_MAX 10
@@ -132,7 +132,7 @@ struct heater_devices {
 ZBUS_CHAN_DECLARE(heater_devices_chan);
 
 //////////////////////////////////////////////////////////////
-// Heater State Channel — collection of N currently-managed heaters
+// Heater State Channel - collection of N currently-managed heaters
 //
 // The payload carries up to HEATERS_MAX slots. Each slot is a
 // per-heater struct heater_data; identification is by the `name`
@@ -150,7 +150,7 @@ struct heater_states {
 ZBUS_CHAN_DECLARE(heater_states_chan);
 
 //////////////////////////////////////////////////////////////
-// Radio Status Channel — WiFi link state only.
+// Radio Status Channel - WiFi link state only.
 //
 // BLE link state is per-heater and rides in heater_data (which
 // scales when we add multi-heater support). WiFi is single-link,

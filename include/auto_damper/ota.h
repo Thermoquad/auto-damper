@@ -34,7 +34,7 @@ typedef void (*ota_progress_cb)(const struct ota_progress *p);
 
 /* Fetch the release manifest, compare versions, and report the
  * result via the progress callback. Does NOT download or install
- * anything — the caller can pass the result through to a UI for
+ * anything - the caller can pass the result through to a UI for
  * user confirmation before calling ota_install_pending().
  *
  * On UPDATE_AVAILABLE, the parsed manifest is cached for a short

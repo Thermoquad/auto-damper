@@ -500,7 +500,7 @@ static int cmd_test_wifi_ble(const struct shell *sh, size_t argc, char **argv)
   /* Step 1: Check WiFi */
   shell_print(sh, "\n[1] WiFi status:");
   if (!wifi_is_connected()) {
-    shell_error(sh, "  WiFi not connected — abort");
+    shell_error(sh, "  WiFi not connected - abort");
     return -ENODEV;
   }
   char addr[16];
@@ -796,7 +796,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
                   cmd_ble_raw, 2, 15),
     SHELL_SUBCMD_SET_END);
 
-/* OTA — Phase 2/4: trigger a slot1 swap on next boot. Verifies that
+/* OTA - Phase 2/4: trigger a slot1 swap on next boot. Verifies that
  * an image previously written to slot1 (manually for Phase 2, via
  * HTTPS download for Phase 4) is recognized by MCUboot and swapped
  * in. boot_set_pending() writes the swap_info trailer byte that
@@ -871,7 +871,7 @@ static void ota_shell_progress(const struct ota_progress *p)
     shell_print(ota_shell, "Verifying sha256...");
     break;
   case OTA_STATE_SWAP_PENDING:
-    shell_print(ota_shell, "Update %s installed — rebooting",
+    shell_print(ota_shell, "Update %s installed - rebooting",
                 p->available_version);
     break;
   case OTA_STATE_FAILED:
@@ -888,7 +888,7 @@ static int cmd_ota_update(const struct shell *sh, size_t argc, char **argv)
   ota_shell = sh;
   int rc = ota_check(ota_shell_progress);
   if (rc == 0) {
-    /* Shell command path bypasses the confirm step — it's a developer
+    /* Shell command path bypasses the confirm step - it's a developer
      * tool. The web UI uses the two-stage flow. */
     ota_install_pending(ota_shell_progress);
   }

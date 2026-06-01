@@ -195,7 +195,7 @@ static bool extract_path_name(const char *url, const char *prefix,
 }
 
 //////////////////////////////////////////////////////////////
-// /api/damper* — Unified Damper Handler
+// /api/damper* - Unified Damper Handler
 //////////////////////////////////////////////////////////////
 
 static char damper_buf[JSON_BUF_SIZE];
@@ -405,7 +405,7 @@ HTTP_RESOURCE_DEFINE(api_damper_res, damper_http_service,
                      "/api/damper*", &api_damper_detail);
 
 //////////////////////////////////////////////////////////////
-// /api/heaters* — Unified Heaters Handler
+// /api/heaters* - Unified Heaters Handler
 //////////////////////////////////////////////////////////////
 
 static char heaters_buf[JSON_BUF_SIZE];
@@ -666,7 +666,7 @@ HTTP_RESOURCE_DEFINE(api_heaters_res, damper_http_service,
                      "/api/heaters*", &api_heaters_detail);
 
 //////////////////////////////////////////////////////////////
-// /metrics — Prometheus exposition format
+// /metrics - Prometheus exposition format
 //////////////////////////////////////////////////////////////
 
 #define METRICS_BUF_SIZE 4096

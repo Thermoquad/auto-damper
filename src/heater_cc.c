@@ -138,7 +138,7 @@ static int cc_encode_power(uint8_t *buf, size_t len, bool on)
     return -ENOMEM;
   }
 
-  /* 0xA1 is a heating toggle — starts heating when off, stops when
+  /* 0xA1 is a heating toggle - starts heating when off, stops when
      heating. For fan mode, caller must use encode_set_mode(FAN)
      to send the blowing toggle 0xA4 instead. */
   cc_cmd(buf, 0xBB, 0xA1);
