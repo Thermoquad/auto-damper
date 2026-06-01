@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include <ctype.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 
 #include <zephyr/kernel.h>
@@ -213,7 +215,18 @@ static int on_header_value(struct http_parser *p, const char *at, size_t len)
   if (hdr_state != HDR_VALUE) {
     /* Field is now complete; decide whether to capture the value. */
     hdr_state = HDR_VALUE;
-    capturing_location = (strcasecmp(hdr_field_buf, "location") == 0);
+    /* Inline case-insensitive compare with "location" — picolibc on
+     * Zephyr doesn't always ship strcasecmp. */
+    const char *want = "location";
+    const char *got = hdr_field_buf;
+    capturing_location = true;
+    while (*want && *got) {
+      char a = *want++;
+      char b = *got++;
+      if (b >= 'A' && b <= 'Z') b += 32;
+      if (a != b) { capturing_location = false; break; }
+    }
+    if (*want || *got) capturing_location = false;
     if (capturing_location && current_ctx) {
       current_ctx->location[0] = '\0';
     }
