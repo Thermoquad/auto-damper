@@ -404,7 +404,29 @@ static int fetch(const char *initial_url,
 
 //////////////////////////////////////////////////////////////
 // Top-level OTA flow
+//
+// Split into two phases so the user can confirm before the device
+// actually installs anything:
+//
+//   1. ota_check()           — fetch manifest, compare versions, set
+//                              cached_manifest if newer version exists
+//   2. ota_install_pending() — re-validate cache freshness, then
+//                              download, verify, swap, reboot
+//
+// Between the two phases the device shows UPDATE_AVAILABLE state.
+// The user has to explicitly click "Install" to start phase 2.
 //////////////////////////////////////////////////////////////
+
+static struct {
+  bool valid;
+  int64_t fetched_at_ms;  /* k_uptime_get() when last set */
+  char available_version[16];
+  char fw_url[256];
+  char sha_hex[65];
+  uint32_t expected_size;
+} cached_manifest;
+
+#define MANIFEST_CACHE_TTL_MS (5 * 60 * 1000)  /* 5 minutes */
 
 static void emit(ota_progress_cb cb, struct ota_progress *p, enum ota_state s)
 {
@@ -412,14 +434,8 @@ static void emit(ota_progress_cb cb, struct ota_progress *p, enum ota_state s)
   if (cb) cb(p);
 }
 
-int ota_check_and_update(ota_progress_cb cb)
+static int fetch_manifest(struct ota_progress *progress, ota_progress_cb cb)
 {
-  struct ota_progress progress = {0};
-  ota_get_running_version(progress.running_version,
-                          sizeof(progress.running_version));
-  emit(cb, &progress, OTA_STATE_CHECKING);
-
-  /* --- Fetch manifest --- */
   static char manifest[1024];
   size_t mlen = 0;
   char start_url[256];
@@ -429,41 +445,70 @@ int ota_check_and_update(ota_progress_cb cb)
   int rc = fetch(start_url, (uint8_t *)manifest, sizeof(manifest) - 1, &mlen,
                  NULL, NULL, NULL, 0, NULL, NULL);
   if (rc < 0) {
-    snprintf(progress.error, sizeof(progress.error),
+    snprintf(progress->error, sizeof(progress->error),
              "manifest fetch failed: %d", rc);
-    emit(cb, &progress, OTA_STATE_FAILED);
+    emit(cb, progress, OTA_STATE_FAILED);
     return rc;
   }
   manifest[mlen] = '\0';
   LOG_INF("manifest (%u bytes)", (unsigned)mlen);
 
-  if (!json_get_string(manifest, "version",
-                       progress.available_version,
-                       sizeof(progress.available_version))) {
-    strncpy(progress.error, "manifest missing version",
-            sizeof(progress.error) - 1);
-    emit(cb, &progress, OTA_STATE_FAILED);
+  char available[16];
+  if (!json_get_string(manifest, "version", available, sizeof(available))) {
+    strncpy(progress->error, "manifest missing version",
+            sizeof(progress->error) - 1);
+    emit(cb, progress, OTA_STATE_FAILED);
     return -EBADMSG;
   }
   char fw_url[256];
   if (!json_get_string(manifest, "url", fw_url, sizeof(fw_url))) {
-    strncpy(progress.error, "manifest missing url",
-            sizeof(progress.error) - 1);
-    emit(cb, &progress, OTA_STATE_FAILED);
+    strncpy(progress->error, "manifest missing url",
+            sizeof(progress->error) - 1);
+    emit(cb, progress, OTA_STATE_FAILED);
     return -EBADMSG;
   }
   char sha_hex[65];
   if (!json_get_string(manifest, "sha256", sha_hex, sizeof(sha_hex))) {
-    strncpy(progress.error, "manifest missing sha256",
-            sizeof(progress.error) - 1);
-    emit(cb, &progress, OTA_STATE_FAILED);
+    strncpy(progress->error, "manifest missing sha256",
+            sizeof(progress->error) - 1);
+    emit(cb, progress, OTA_STATE_FAILED);
     return -EBADMSG;
   }
   uint32_t expected_size = 0;
   json_get_uint(manifest, "size", &expected_size);
-  progress.bytes_total = expected_size;
 
-  /* --- Version comparison --- */
+  /* Populate cache */
+  cached_manifest.valid = true;
+  cached_manifest.fetched_at_ms = k_uptime_get();
+  strncpy(cached_manifest.available_version, available,
+          sizeof(cached_manifest.available_version) - 1);
+  cached_manifest.available_version[sizeof(cached_manifest.available_version) - 1] = '\0';
+  strncpy(cached_manifest.fw_url, fw_url, sizeof(cached_manifest.fw_url) - 1);
+  cached_manifest.fw_url[sizeof(cached_manifest.fw_url) - 1] = '\0';
+  strncpy(cached_manifest.sha_hex, sha_hex, sizeof(cached_manifest.sha_hex) - 1);
+  cached_manifest.sha_hex[sizeof(cached_manifest.sha_hex) - 1] = '\0';
+  cached_manifest.expected_size = expected_size;
+
+  /* Mirror into progress so the callback sees it. */
+  strncpy(progress->available_version, available,
+          sizeof(progress->available_version) - 1);
+  progress->bytes_total = expected_size;
+  return 0;
+}
+
+int ota_check(ota_progress_cb cb)
+{
+  struct ota_progress progress = {0};
+  ota_get_running_version(progress.running_version,
+                          sizeof(progress.running_version));
+  emit(cb, &progress, OTA_STATE_CHECKING);
+
+  int rc = fetch_manifest(&progress, cb);
+  if (rc < 0) {
+    cached_manifest.valid = false;
+    return rc;
+  }
+
   uint32_t cur = 0, avail = 0;
   parse_version(progress.running_version, &cur);
   parse_version(progress.available_version, &avail);
@@ -471,15 +516,50 @@ int ota_check_and_update(ota_progress_cb cb)
     LOG_INF("Up to date: %s (latest %s)",
             progress.running_version, progress.available_version);
     emit(cb, &progress, OTA_STATE_UP_TO_DATE);
+    /* Keep cache so the UI can still see the version; it's just not
+     * newer. Install would fast-path to UP_TO_DATE if called. */
     return -EAGAIN;
   }
   LOG_INF("Update available: %s -> %s",
           progress.running_version, progress.available_version);
+  emit(cb, &progress, OTA_STATE_UPDATE_AVAILABLE);
+  return 0;
+}
 
-  /* --- Download binary into slot1 --- */
+int ota_install_pending(ota_progress_cb cb)
+{
+  struct ota_progress progress = {0};
+  ota_get_running_version(progress.running_version,
+                          sizeof(progress.running_version));
+
+  /* Re-validate the cached manifest. If stale or missing, re-fetch. */
+  bool need_recheck = !cached_manifest.valid ||
+      (k_uptime_get() - cached_manifest.fetched_at_ms) > MANIFEST_CACHE_TTL_MS;
+
+  if (need_recheck) {
+    emit(cb, &progress, OTA_STATE_CHECKING);
+    int rc = fetch_manifest(&progress, cb);
+    if (rc < 0) {
+      cached_manifest.valid = false;
+      return rc;
+    }
+    uint32_t cur = 0, avail = 0;
+    parse_version(progress.running_version, &cur);
+    parse_version(progress.available_version, &avail);
+    if (avail <= cur) {
+      emit(cb, &progress, OTA_STATE_UP_TO_DATE);
+      return -EAGAIN;
+    }
+  } else {
+    /* Use the cached values */
+    strncpy(progress.available_version, cached_manifest.available_version,
+            sizeof(progress.available_version) - 1);
+    progress.bytes_total = cached_manifest.expected_size;
+  }
+
   emit(cb, &progress, OTA_STATE_DOWNLOADING);
   struct flash_img_context flash_ctx;
-  rc = flash_img_init(&flash_ctx);
+  int rc = flash_img_init(&flash_ctx);
   if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
              "flash_img_init: %d", rc);
@@ -496,8 +576,8 @@ int ota_check_and_update(ota_progress_cb cb)
   }
 
   uint32_t bytes_received = 0;
-  rc = fetch(fw_url, NULL, 0, NULL, &flash_ctx, &sha,
-             &bytes_received, expected_size, cb, &progress);
+  rc = fetch(cached_manifest.fw_url, NULL, 0, NULL, &flash_ctx, &sha,
+             &bytes_received, cached_manifest.expected_size, cb, &progress);
   if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
              "firmware fetch failed: %d", rc);
@@ -505,7 +585,6 @@ int ota_check_and_update(ota_progress_cb cb)
     return rc;
   }
 
-  /* --- Verify sha256 --- */
   emit(cb, &progress, OTA_STATE_VERIFYING);
   uint8_t digest[32];
   size_t digest_len = 0;
@@ -520,8 +599,9 @@ int ota_check_and_update(ota_progress_cb cb)
   for (int i = 0; i < 32; i++) {
     snprintf(digest_hex + i * 2, 3, "%02x", digest[i]);
   }
-  if (strcmp(digest_hex, sha_hex) != 0) {
-    LOG_ERR("sha256 mismatch: got %s, expected %s", digest_hex, sha_hex);
+  if (strcmp(digest_hex, cached_manifest.sha_hex) != 0) {
+    LOG_ERR("sha256 mismatch: got %s, expected %s",
+            digest_hex, cached_manifest.sha_hex);
     strncpy(progress.error, "sha256 mismatch",
             sizeof(progress.error) - 1);
     emit(cb, &progress, OTA_STATE_FAILED);
@@ -529,7 +609,6 @@ int ota_check_and_update(ota_progress_cb cb)
   }
   LOG_INF("Image sha256 verified: %s", digest_hex);
 
-  /* --- Mark slot1 for test swap, reboot --- */
   rc = boot_set_pending(0);
   if (rc < 0) {
     snprintf(progress.error, sizeof(progress.error),
@@ -543,8 +622,3 @@ int ota_check_and_update(ota_progress_cb cb)
   sys_reboot(SYS_REBOOT_COLD);
   return 0;
 }
-//bump
-//bump
-//bump
-//bump
-//bump

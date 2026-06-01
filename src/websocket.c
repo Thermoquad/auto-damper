@@ -41,6 +41,7 @@ extern const struct http_service_desc damper_http_service;
 
 struct ws_client {
   int sock;
+  bool sent_initial;
   struct k_work_delayable recv_work;
   uint8_t recv_buf[WS_RECV_BUF_SIZE];
 };
@@ -302,17 +303,21 @@ static char ws_cmd_buf[WS_BUF_SIZE];
 static K_SEM_DEFINE(ws_ota_trigger, 0, 1);
 static char ws_ota_progress_buf[512];
 
+/* What ota.check / ota.install set so the worker knows which to run. */
+static enum { OTA_REQ_NONE, OTA_REQ_CHECK, OTA_REQ_INSTALL } ws_ota_request;
+
 static const char *ws_ota_state_str(enum ota_state s)
 {
   switch (s) {
-  case OTA_STATE_IDLE:         return "idle";
-  case OTA_STATE_CHECKING:     return "checking";
-  case OTA_STATE_UP_TO_DATE:   return "up_to_date";
-  case OTA_STATE_DOWNLOADING:  return "downloading";
-  case OTA_STATE_VERIFYING:    return "verifying";
-  case OTA_STATE_SWAP_PENDING: return "swap_pending";
-  case OTA_STATE_FAILED:       return "failed";
-  default:                     return "unknown";
+  case OTA_STATE_IDLE:             return "idle";
+  case OTA_STATE_CHECKING:         return "checking";
+  case OTA_STATE_UP_TO_DATE:       return "up_to_date";
+  case OTA_STATE_UPDATE_AVAILABLE: return "update_available";
+  case OTA_STATE_DOWNLOADING:      return "downloading";
+  case OTA_STATE_VERIFYING:        return "verifying";
+  case OTA_STATE_SWAP_PENDING:     return "swap_pending";
+  case OTA_STATE_FAILED:           return "failed";
+  default:                         return "unknown";
   }
 }
 
@@ -342,7 +347,13 @@ static void ws_ota_thread_fn(void *a, void *b, void *c)
   ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
   while (1) {
     k_sem_take(&ws_ota_trigger, K_FOREVER);
-    ota_check_and_update(ws_ota_progress_cb);
+    int req = ws_ota_request;
+    ws_ota_request = OTA_REQ_NONE;
+    if (req == OTA_REQ_CHECK) {
+      ota_check(ws_ota_progress_cb);
+    } else if (req == OTA_REQ_INSTALL) {
+      ota_install_pending(ws_ota_progress_cb);
+    }
   }
 }
 
@@ -662,14 +673,24 @@ static void ws_handle_command(int slot, const char *msg, int msg_len)
     return;
 
   } else if (strcmp(type, "ota.check") == 0) {
-    /* Trigger the OTA worker thread. It runs ota_check_and_update()
-     * with a callback that broadcasts each progress event to all
-     * connected WS clients. Returns immediately — progress arrives
-     * via the broadcast stream. */
+    /* Lightweight check — fetch manifest, compare versions, broadcast
+     * the result. Does NOT install. User then clicks "Install" which
+     * triggers ota.install. */
     if (k_sem_count_get(&ws_ota_trigger) > 0) {
       ws_send_result(slot, false, "ota already in progress");
       return;
     }
+    ws_ota_request = OTA_REQ_CHECK;
+    k_sem_give(&ws_ota_trigger);
+    ws_send_result(slot, true, NULL);
+
+  } else if (strcmp(type, "ota.install") == 0) {
+    /* User confirmed the update — download, verify, swap, reboot. */
+    if (k_sem_count_get(&ws_ota_trigger) > 0) {
+      ws_send_result(slot, false, "ota already in progress");
+      return;
+    }
+    ws_ota_request = OTA_REQ_INSTALL;
     k_sem_give(&ws_ota_trigger);
     ws_send_result(slot, true, NULL);
 
@@ -688,6 +709,24 @@ static void ws_recv_handler(struct k_work *work)
   struct ws_client *client = CONTAINER_OF(dwork, struct ws_client, recv_work);
 
   int slot = (int)(client - ws_clients);
+
+  /* On the first tick after handshake, push the OTA snapshot so the
+   * UI has the running version on initial load — without this the
+   * frontend would have to wait for an idle ota.status response which
+   * could race with the WS open event. */
+  if (slot >= 0 && slot < WS_MAX_CLIENTS && client->sock >= 0 &&
+      !client->sent_initial) {
+    client->sent_initial = true;
+    char running[16];
+    ota_get_running_version(running, sizeof(running));
+    int len = snprintf(ws_cmd_buf, sizeof(ws_cmd_buf),
+        "{\"type\":\"ota\",\"state\":\"idle\","
+        "\"running_version\":\"%s\","
+        "\"available_version\":\"\",\"bytes_received\":0,"
+        "\"bytes_total\":0,\"error\":\"\"}",
+        running);
+    if (len > 0) ws_send_to(slot, ws_cmd_buf, len);
+  }
   if (slot < 0 || slot >= WS_MAX_CLIENTS || client->sock < 0) {
     return;
   }
@@ -744,6 +783,7 @@ static int ws_setup(int ws_socket, struct http_request_ctx *req,
   }
 
   ws_clients[slot].sock = ws_socket;
+  ws_clients[slot].sent_initial = false;
   LOG_INF("WS client connected (slot %d, fd %d)", slot, ws_socket);
 
   k_work_reschedule_for_queue(&ws_work_q, &ws_clients[slot].recv_work,

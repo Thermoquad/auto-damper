@@ -886,7 +886,12 @@ static int cmd_ota_update(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
   ota_shell = sh;
-  ota_check_and_update(ota_shell_progress);
+  int rc = ota_check(ota_shell_progress);
+  if (rc == 0) {
+    /* Shell command path bypasses the confirm step — it's a developer
+     * tool. The web UI uses the two-stage flow. */
+    ota_install_pending(ota_shell_progress);
+  }
   ota_shell = NULL;
   return 0;
 }

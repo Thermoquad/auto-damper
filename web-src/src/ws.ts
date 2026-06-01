@@ -44,8 +44,8 @@ export type HeatersMsg = { type: 'heaters'; devices: HeaterDevice[] };
 export type ResultMsg = { type: 'result'; ok: boolean; error?: string };
 
 export type OtaState =
-  | 'idle' | 'checking' | 'up_to_date' | 'downloading'
-  | 'verifying' | 'swap_pending' | 'failed';
+  | 'idle' | 'checking' | 'up_to_date' | 'update_available'
+  | 'downloading' | 'verifying' | 'swap_pending' | 'failed';
 
 export type OtaMsg = {
   type: 'ota';

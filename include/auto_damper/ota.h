@@ -9,11 +9,13 @@
 /* OTA states reported via ota_progress_cb. */
 enum ota_state {
   OTA_STATE_IDLE,
-  OTA_STATE_CHECKING,        /* fetching manifest */
-  OTA_STATE_UP_TO_DATE,      /* no newer version */
-  OTA_STATE_DOWNLOADING,     /* streaming binary into slot1 */
-  OTA_STATE_VERIFYING,       /* sha256 verification */
-  OTA_STATE_SWAP_PENDING,    /* boot_set_pending succeeded, about to reboot */
+  OTA_STATE_CHECKING,          /* fetching manifest */
+  OTA_STATE_UP_TO_DATE,        /* no newer version */
+  OTA_STATE_UPDATE_AVAILABLE,  /* manifest version > running version; user
+                                * confirmation needed before install */
+  OTA_STATE_DOWNLOADING,       /* streaming binary into slot1 */
+  OTA_STATE_VERIFYING,         /* sha256 verification */
+  OTA_STATE_SWAP_PENDING,      /* boot_set_pending succeeded, about to reboot */
   OTA_STATE_FAILED,
 };
 
@@ -30,13 +32,25 @@ struct ota_progress {
 
 typedef void (*ota_progress_cb)(const struct ota_progress *p);
 
-/* Check for an OTA update and apply it if one is available.
- * Blocks for the duration of the operation. Should be called from
- * its own thread, not from a callback context.
+/* Fetch the release manifest, compare versions, and report the
+ * result via the progress callback. Does NOT download or install
+ * anything — the caller can pass the result through to a UI for
+ * user confirmation before calling ota_install_pending().
  *
- * Returns 0 on success (image installed, reboot pending), -EAGAIN if
- * already up-to-date, negative errno on failure. */
-int ota_check_and_update(ota_progress_cb cb);
+ * On UPDATE_AVAILABLE, the parsed manifest is cached for a short
+ * window so ota_install_pending() can resume without re-fetching.
+ *
+ * Returns 0 if an update is available, -EAGAIN if up-to-date,
+ * negative errno on failure. */
+int ota_check(ota_progress_cb cb);
+
+/* Download + verify + commit the image whose manifest was just
+ * fetched by ota_check(). If the cached manifest has expired or
+ * ota_check() wasn't called first, this re-runs the check.
+ *
+ * Returns 0 on success (image installed, reboot pending),
+ * negative errno on failure. */
+int ota_install_pending(ota_progress_cb cb);
 
 /* Read the MCUboot image version of the currently-running primary
  * slot. version_out must be at least 16 bytes. */
