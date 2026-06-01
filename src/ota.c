@@ -286,6 +286,13 @@ static int http_get(const char *host, const char *port, const char *url,
   }
 
   static uint8_t recv_buf[OTA_RECV_BUF_SIZE];
+  /* Zero recv_buf so post-request scans for Location can stop at the
+   * first NUL byte without overshooting into stale data. The http_client
+   * resets rsp->data_len to 0 before invoking the FINAL callback (with
+   * no body fragments for 30x responses), so we can't rely on the
+   * callback to scan during processing. */
+  memset(recv_buf, 0, sizeof(recv_buf));
+
   struct http_request req = {
       .method = HTTP_GET,
       .url = url,
@@ -303,6 +310,14 @@ static int http_get(const char *host, const char *port, const char *url,
   if (rc < 0) {
     LOG_ERR("http_client_req: %d", rc);
     return rc;
+  }
+
+  /* If response_cb didn't capture the Location (no body fragment fired
+   * during header-only 30x responses), scan the buffer directly here.
+   * recv_buf was zeroed so strnlen + scan stop at the actual data. */
+  if (ctx->location[0] == '\0') {
+    size_t used = strnlen((char *)recv_buf, sizeof(recv_buf));
+    scan_location(ctx, recv_buf, used);
   }
 
   if (status_out) {
