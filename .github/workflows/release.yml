@@ -62,9 +62,12 @@ jobs:
         if: steps.tag.outputs.new_tag != ''
         run: |
           west init -l origin
-          west update --narrow -o=--depth=1
+          west update
+          echo "=== west projects after update ==="
+          west list
+          test -d modules/lib/zephyr-cyw43-bt || { echo "ERROR: zephyr-cyw43-bt not fetched"; exit 1; }
+          test -d modules/drivers/zephyr-servo-rpi-pio || { echo "ERROR: zephyr-servo-rpi-pio not fetched"; exit 1; }
           pip install -r zephyr/scripts/requirements-base.txt
-          # imgtool ships with mcuboot
           pip install -e bootloader/mcuboot/scripts
 
       - name: Fetch Infineon BT firmware blobs
