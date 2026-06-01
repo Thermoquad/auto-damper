@@ -171,9 +171,45 @@ struct fetch_ctx {
   uint32_t bytes_total;
   ota_progress_cb cb;
   struct ota_progress *progress;
-  /* For redirect handling: dump the Location header to this buffer */
+  /* HTTP response state captured from response_cb (http_status_code
+   * gets overwritten as the response is parsed; we latch the first
+   * non-zero value so caller sees the final status). */
+  int status;
   char location[256];
 };
+
+static void scan_location(struct fetch_ctx *ctx, const uint8_t *buf, size_t len)
+{
+  if (!buf || len == 0 || ctx->location[0]) {
+    return;
+  }
+  const char *p = (const char *)buf;
+  const char *end = p + len;
+  /* Case-insensitive scan for "location:" — GitHub uses lowercase. */
+  while (p < end - 9) {
+    if ((p[0] == 'L' || p[0] == 'l') &&
+        (p[1] == 'O' || p[1] == 'o') &&
+        (p[2] == 'C' || p[2] == 'c') &&
+        (p[3] == 'A' || p[3] == 'a') &&
+        (p[4] == 'T' || p[4] == 't') &&
+        (p[5] == 'I' || p[5] == 'i') &&
+        (p[6] == 'O' || p[6] == 'o') &&
+        (p[7] == 'N' || p[7] == 'n') &&
+        p[8] == ':') {
+      const char *v = p + 9;
+      while (v < end && (*v == ' ' || *v == '\t')) v++;
+      const char *nl = v;
+      while (nl < end && *nl != '\r' && *nl != '\n') nl++;
+      size_t vlen = nl - v;
+      if (vlen > 0 && vlen < sizeof(ctx->location)) {
+        memcpy(ctx->location, v, vlen);
+        ctx->location[vlen] = '\0';
+      }
+      return;
+    }
+    p++;
+  }
+}
 
 static int response_cb(struct http_response *rsp,
                        enum http_final_call final_data,
@@ -181,9 +217,16 @@ static int response_cb(struct http_response *rsp,
 {
   struct fetch_ctx *ctx = user_data;
 
-  /* Capture Location header from any redirect response. The HTTP
-   * client parses headers for us via http_header_cb when configured,
-   * but for simplicity we scan the recv_buf directly. */
+  if (rsp->http_status_code != 0 && ctx->status == 0) {
+    ctx->status = rsp->http_status_code;
+  }
+  /* Scan the most-recently-received bytes for a Location header. The
+   * header may not all be in the body_frag window so scan the whole
+   * recv_buf. */
+  if (!ctx->location[0]) {
+    scan_location(ctx, rsp->recv_buf, rsp->data_len);
+  }
+
   if (rsp->body_frag_start && rsp->body_frag_len > 0) {
     if (ctx->body_buf) {
       size_t take = MIN(rsp->body_frag_len,
@@ -253,6 +296,8 @@ static int http_get(const char *host, const char *port, const char *url,
       .recv_buf_len = sizeof(recv_buf),
   };
 
+  ctx->status = 0;
+  ctx->location[0] = '\0';
   int rc = http_client_req(sock, &req, OTA_REQ_TIMEOUT_MS, ctx);
   zsock_close(sock);
   if (rc < 0) {
@@ -260,25 +305,12 @@ static int http_get(const char *host, const char *port, const char *url,
     return rc;
   }
 
-  /* Inspect the captured response to extract status + Location. The
-   * Zephyr http_response status code lives in the callback's rsp; we
-   * sniff from the recv_buf manually here as a fallback. */
   if (status_out) {
-    const char *p = strstr((char *)recv_buf, "HTTP/1.1 ");
-    *status_out = p ? atoi(p + 9) : 0;
+    *status_out = ctx->status;
   }
   if (redirect_out) {
-    const char *loc = strstr((char *)recv_buf, "location:");
-    if (!loc) loc = strstr((char *)recv_buf, "Location:");
-    if (loc) {
-      loc += 9;
-      while (*loc == ' ') loc++;
-      const char *end = strstr(loc, "\r\n");
-      if (end && (size_t)(end - loc) < redirect_cap) {
-        memcpy(redirect_out, loc, end - loc);
-        redirect_out[end - loc] = '\0';
-      }
-    }
+    strncpy(redirect_out, ctx->location, redirect_cap - 1);
+    redirect_out[redirect_cap - 1] = '\0';
   }
   return 0;
 }
