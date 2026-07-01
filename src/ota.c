@@ -16,8 +16,12 @@
 #include <bootutil/image.h>
 #include <psa/crypto.h>
 
+#include <zephyr/zbus/zbus.h>
+
 #include <auto_damper/config.h>
+#include <auto_damper/heater.h>
 #include <auto_damper/ota.h>
+#include <auto_damper/zbus.h>
 
 LOG_MODULE_REGISTER(ota, LOG_LEVEL_INF);
 
@@ -713,7 +717,14 @@ int ota_revert(ota_progress_cb cb)
 // Auto-revert NVS setting
 //////////////////////////////////////////////////////////////
 
-static void ensure_settings_loaded(void)
+/* Protects ota_settings_cache against concurrent access. Both the
+ * zbus listeners (which reach here through ota_auto_revert_enabled()
+ * on the WiFi and BT publisher threads) and the shell / websocket
+ * paths that set settings serialize through this mutex, so the lazy
+ * load and the read/write of the cache remain atomic across contexts. */
+static K_MUTEX_DEFINE(settings_mutex);
+
+static void ensure_settings_loaded_locked(void)
 {
   if (ota_settings_loaded) return;
   uint16_t version;
@@ -730,15 +741,96 @@ static void ensure_settings_loaded(void)
 
 bool ota_auto_revert_enabled(void)
 {
-  ensure_settings_loaded();
-  return ota_settings_cache.auto_revert_enabled;
+  k_mutex_lock(&settings_mutex, K_FOREVER);
+  ensure_settings_loaded_locked();
+  bool val = ota_settings_cache.auto_revert_enabled;
+  k_mutex_unlock(&settings_mutex);
+  return val;
 }
 
 int ota_set_auto_revert_enabled(bool enabled)
 {
-  ensure_settings_loaded();
+  k_mutex_lock(&settings_mutex, K_FOREVER);
+  ensure_settings_loaded_locked();
   ota_settings_cache.auto_revert_enabled = enabled;
-  return config_save(NVS_ID_OTA_SETTINGS, NVS_TYPE_OTA,
-                     OTA_SETTINGS_VERSION, &ota_settings_cache,
-                     sizeof(ota_settings_cache));
+  int rc = config_save(NVS_ID_OTA_SETTINGS, NVS_TYPE_OTA,
+                       OTA_SETTINGS_VERSION, &ota_settings_cache,
+                       sizeof(ota_settings_cache));
+  k_mutex_unlock(&settings_mutex);
+  return rc;
 }
+
+//////////////////////////////////////////////////////////////
+// Auto-confirm on radio-up
+//
+// When MCUboot boots into slot0 after a fresh install the swap type
+// is REVERT until boot_set_confirmed() is called. Left untouched it
+// reverts on the next reboot. That's the safety net for an image
+// that comes up but is broken in some catastrophic way.
+//
+// A running image is judged healthy once either radio stack has been
+// alive for a settle window: WiFi association + DHCP bind, or BLE
+// GATT connection to a heater. The zbus listeners fire earlier than
+// those signals - on WIFI_STATUS_CONN_SUCCESS (before DHCP) and on
+// L2CAP connect (before GATT ready) - so we schedule a delayed work
+// item and let the settle window elapse before actually flipping the
+// confirmed bit. If the connection died in the interim, swap type
+// would remain REVERT, but that's fine: the work simply retries on
+// the next connect event.
+//
+// The delayed work runs on the system workqueue, off the publisher's
+// thread. That avoids the "calling boot_set_confirmed from BT HCI
+// callback context" hazard the initial version had, and gives us a
+// natural serialization point for the check-then-write of the swap
+// bit (only one instance of the delayed work runs at a time).
+//////////////////////////////////////////////////////////////
+
+/* Settle window before we trust "radio is up" enough to auto-confirm.
+ * Chosen to comfortably span DHCP bind (typical 1-2 s) and GATT
+ * discover + subscribe (typical 0.5-1 s) on this hardware. */
+#define AUTOCONFIRM_SETTLE_MS 3000
+
+static void autoconfirm_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(autoconfirm_work, autoconfirm_work_handler);
+
+static void autoconfirm_work_handler(struct k_work *work)
+{
+  ARG_UNUSED(work);
+  if (!ota_auto_revert_enabled()) return;
+  int swap = boot_swap_type();
+  if (swap != BOOT_SWAP_TYPE_REVERT) return;
+  int rc = boot_set_confirmed();
+  if (rc == 0) {
+    LOG_INF("Auto-confirmed running image on radio-up");
+  } else {
+    LOG_WRN("Auto-confirm boot_set_confirmed failed: %d", rc);
+  }
+}
+
+static void wifi_up_listener_cb(const struct zbus_channel *chan)
+{
+  const struct radio_status *rs = zbus_chan_const_msg(chan);
+  if (!rs->wifi_connected) return;
+  /* Schedule (not submit) - if the work is already queued, this
+   * reschedules to the later deadline, which is exactly what we
+   * want: latest radio-up event resets the settle timer. */
+  k_work_schedule(&autoconfirm_work, K_MSEC(AUTOCONFIRM_SETTLE_MS));
+}
+ZBUS_LISTENER_DEFINE(ota_wifi_listener, wifi_up_listener_cb);
+ZBUS_CHAN_ADD_OBS(radio_status_chan, ota_wifi_listener, 5);
+
+static void ble_up_listener_cb(const struct zbus_channel *chan)
+{
+  /* heater_states_chan is broadcast on any per-heater state change.
+   * A single connected slot is enough of an indication the BT stack
+   * is live end-to-end after the settle window. */
+  const struct heater_states *hs = zbus_chan_const_msg(chan);
+  for (int i = 0; i < hs->count; i++) {
+    if (hs->heaters[i].connected) {
+      k_work_schedule(&autoconfirm_work, K_MSEC(AUTOCONFIRM_SETTLE_MS));
+      return;
+    }
+  }
+}
+ZBUS_LISTENER_DEFINE(ota_ble_listener, ble_up_listener_cb);
+ZBUS_CHAN_ADD_OBS(heater_states_chan, ota_ble_listener, 5);

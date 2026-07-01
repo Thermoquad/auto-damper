@@ -809,6 +809,14 @@ static int cmd_ota_test_swap(const struct shell *sh, size_t argc, char **argv)
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
 
+  if (ota_auto_revert_enabled()) {
+    shell_warn(sh,
+        "auto_revert is enabled; the radio-up listener will confirm "
+        "the test image and defeat the revert observation.");
+    shell_warn(sh,
+        "run 'damper ota auto_revert off' first, or expect the test "
+        "swap to be silently made permanent.");
+  }
   int rc = boot_set_pending(0);
   if (rc != 0) {
     shell_error(sh, "boot_set_pending failed: %d", rc);
