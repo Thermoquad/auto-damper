@@ -975,39 +975,96 @@ static int cmd_ota_auto_revert(const struct shell *sh, size_t argc,
 
 //////////////////////////////////////////////////////////////
 // Light Commands
+//
+// The strip uses a single-wire button-press protocol - LOW pulses of
+// specific widths emulate the three physical buttons on the OEM
+// controller (power/color-cycle, brightness+, brightness-). These
+// commands let us either observe the controller's output (sniff mode)
+// or generate our own pulses (output mode).
 //////////////////////////////////////////////////////////////
 
-static int cmd_light_desk_freq(const struct shell *sh, size_t argc, char **argv)
+static int cmd_light_desk_high(const struct shell *sh,
+                               size_t argc, char **argv)
 {
-  uint32_t hz = strtoul(argv[1], NULL, 10);
-  int rc = light_desk_set_freq_hz(hz);
-  if (rc == -EINVAL) {
-    shell_error(sh, "freq must be 10 - 1000000 Hz");
-    return rc;
+  ARG_UNUSED(argc); ARG_UNUSED(argv);
+  int rc = light_desk_high();
+  shell_print(sh, "desk: %s", light_desk_state_str());
+  return rc;
+}
+
+static int cmd_light_desk_low(const struct shell *sh,
+                              size_t argc, char **argv)
+{
+  ARG_UNUSED(argc); ARG_UNUSED(argv);
+  int rc = light_desk_low();
+  shell_print(sh, "desk: %s", light_desk_state_str());
+  return rc;
+}
+
+static int cmd_light_desk_pulse(const struct shell *sh,
+                                size_t argc, char **argv)
+{
+  uint32_t ms = strtoul(argv[1], NULL, 10);
+  if (ms == 0 || ms > 60000) {
+    shell_error(sh, "pulse ms must be 1 - 60000");
+    return -EINVAL;
   }
+  shell_print(sh, "desk: pulse LOW %u ms", ms);
+  int rc = light_desk_pulse(ms);
+  shell_print(sh, "desk: %s", light_desk_state_str());
+  return rc;
+}
+
+static int cmd_light_desk_sweep(const struct shell *sh,
+                                size_t argc, char **argv)
+{
+  ARG_UNUSED(argc); ARG_UNUSED(argv);
+  shell_print(sh,
+      "desk: geometric sweep 10-2000 ms with 2 s gaps. ~20 s total. "
+      "Watch the strip and note which pulse (if any) changes it.");
+  int rc = light_desk_sweep();
+  shell_print(sh, "desk: sweep done, %s", light_desk_state_str());
+  return rc;
+}
+
+static int cmd_light_desk_sniff(const struct shell *sh,
+                                size_t argc, char **argv)
+{
+  ARG_UNUSED(argc); ARG_UNUSED(argv);
+  int rc = light_desk_sniff_start();
   if (rc) {
-    shell_error(sh, "light_desk_set_freq_hz: %d", rc);
+    shell_error(sh, "sniff start: %d", rc);
     return rc;
   }
-  shell_print(sh, "desk: freq=%u Hz duty=%u%%",
-              light_desk_freq_hz(), light_desk_duty_pct());
+  shell_print(sh,
+      "desk: sniffing GP15. Press buttons on the OEM controller, then "
+      "'damper light desk dump' to see the recorded pulse widths.");
   return 0;
 }
 
-static int cmd_light_desk_duty(const struct shell *sh, size_t argc, char **argv)
+static int cmd_light_desk_dump(const struct shell *sh,
+                               size_t argc, char **argv)
 {
-  int d = atoi(argv[1]);
-  if (d < 0 || d > 100) {
-    shell_error(sh, "duty must be 0 - 100");
-    return -EINVAL;
+  ARG_UNUSED(argc); ARG_UNUSED(argv);
+  struct light_sniff_event evs[128];
+  size_t n = light_desk_sniff_drain(evs, ARRAY_SIZE(evs));
+  if (n == 0) {
+    shell_print(sh, "desk: no sniff events buffered");
+    return 0;
   }
-  int rc = light_desk_set_duty_pct((uint8_t)d);
-  if (rc) {
-    shell_error(sh, "light_desk_set_duty_pct: %d", rc);
-    return rc;
+  shell_print(sh, "desk: %zu edges", n);
+  /* Print each edge as "<new_level> @ <ts_ms> (Δ <width_ms>)". The
+   * width is the duration of the *previous* level ending at this
+   * transition, so the reader can quickly spot short pulses. */
+  uint64_t prev_us = evs[0].timestamp_us;
+  for (size_t i = 0; i < n; i++) {
+    uint64_t dt_us = (i == 0) ? 0 : evs[i].timestamp_us - prev_us;
+    shell_print(sh, "  %s @ %llu ms  (prev level held %llu ms)",
+                evs[i].level_high ? "HIGH" : "LOW ",
+                evs[i].timestamp_us / 1000,
+                dt_us / 1000);
+    prev_us = evs[i].timestamp_us;
   }
-  shell_print(sh, "desk: freq=%u Hz duty=%u%%",
-              light_desk_freq_hz(), light_desk_duty_pct());
   return 0;
 }
 
@@ -1015,24 +1072,35 @@ static int cmd_light_desk_status(const struct shell *sh,
                                  size_t argc, char **argv)
 {
   ARG_UNUSED(argc); ARG_UNUSED(argv);
-  shell_print(sh, "desk: freq=%u Hz duty=%u%%",
-              light_desk_freq_hz(), light_desk_duty_pct());
+  shell_print(sh, "desk: %s", light_desk_state_str());
   return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
     light_desk_cmds,
-    SHELL_CMD_ARG(freq, NULL, "damper light desk freq <hz>",
-                  cmd_light_desk_freq, 2, 0),
-    SHELL_CMD_ARG(duty, NULL, "damper light desk duty <0-100>",
-                  cmd_light_desk_duty, 2, 0),
-    SHELL_CMD(status, NULL, "Show desk light PWM state",
+    SHELL_CMD(high, NULL, "Drive GP15 HIGH (idle)",
+              cmd_light_desk_high),
+    SHELL_CMD(low, NULL, "Drive GP15 LOW (hold press)",
+              cmd_light_desk_low),
+    SHELL_CMD_ARG(pulse, NULL,
+                  "damper light desk pulse <ms> - LOW for ms then HIGH",
+                  cmd_light_desk_pulse, 2, 0),
+    SHELL_CMD(sweep, NULL,
+              "Automated geometric pulse sweep 10-2000 ms",
+              cmd_light_desk_sweep),
+    SHELL_CMD(sniff, NULL,
+              "Enter sniff mode: log edges from OEM controller",
+              cmd_light_desk_sniff),
+    SHELL_CMD(dump, NULL,
+              "Dump buffered sniff edges as pulse-width report",
+              cmd_light_desk_dump),
+    SHELL_CMD(status, NULL, "Show current pin mode / level",
               cmd_light_desk_status),
     SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
     light_cmds,
-    SHELL_CMD(desk, &light_desk_cmds, "Desk strip PWM controls", NULL),
+    SHELL_CMD(desk, &light_desk_cmds, "Desk strip control", NULL),
     SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
