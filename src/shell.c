@@ -12,6 +12,7 @@
 #include <auto_damper/ota.h>
 
 #include <auto_damper/damper.h>
+#include <auto_damper/light.h>
 #include <auto_damper/zbus.h>
 #include <auto_damper/heater.h>
 #include <auto_damper/wifi.h>
@@ -972,6 +973,68 @@ static int cmd_ota_auto_revert(const struct shell *sh, size_t argc,
   return 0;
 }
 
+//////////////////////////////////////////////////////////////
+// Light Commands
+//////////////////////////////////////////////////////////////
+
+static int cmd_light_desk_freq(const struct shell *sh, size_t argc, char **argv)
+{
+  uint32_t hz = strtoul(argv[1], NULL, 10);
+  int rc = light_desk_set_freq_hz(hz);
+  if (rc == -EINVAL) {
+    shell_error(sh, "freq must be 10 - 1000000 Hz");
+    return rc;
+  }
+  if (rc) {
+    shell_error(sh, "light_desk_set_freq_hz: %d", rc);
+    return rc;
+  }
+  shell_print(sh, "desk: freq=%u Hz duty=%u%%",
+              light_desk_freq_hz(), light_desk_duty_pct());
+  return 0;
+}
+
+static int cmd_light_desk_duty(const struct shell *sh, size_t argc, char **argv)
+{
+  int d = atoi(argv[1]);
+  if (d < 0 || d > 100) {
+    shell_error(sh, "duty must be 0 - 100");
+    return -EINVAL;
+  }
+  int rc = light_desk_set_duty_pct((uint8_t)d);
+  if (rc) {
+    shell_error(sh, "light_desk_set_duty_pct: %d", rc);
+    return rc;
+  }
+  shell_print(sh, "desk: freq=%u Hz duty=%u%%",
+              light_desk_freq_hz(), light_desk_duty_pct());
+  return 0;
+}
+
+static int cmd_light_desk_status(const struct shell *sh,
+                                 size_t argc, char **argv)
+{
+  ARG_UNUSED(argc); ARG_UNUSED(argv);
+  shell_print(sh, "desk: freq=%u Hz duty=%u%%",
+              light_desk_freq_hz(), light_desk_duty_pct());
+  return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+    light_desk_cmds,
+    SHELL_CMD_ARG(freq, NULL, "damper light desk freq <hz>",
+                  cmd_light_desk_freq, 2, 0),
+    SHELL_CMD_ARG(duty, NULL, "damper light desk duty <0-100>",
+                  cmd_light_desk_duty, 2, 0),
+    SHELL_CMD(status, NULL, "Show desk light PWM state",
+              cmd_light_desk_status),
+    SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+    light_cmds,
+    SHELL_CMD(desk, &light_desk_cmds, "Desk strip PWM controls", NULL),
+    SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
     ota_cmds,
     SHELL_CMD(check, NULL,
@@ -1014,6 +1077,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
     SHELL_CMD(ble, &ble_cmds, "BLE heater commands", NULL),
     SHELL_CMD(wifi, &wifi_cmds, "WiFi commands", NULL),
     SHELL_CMD(ota, &ota_cmds, "Firmware update commands", NULL),
+    SHELL_CMD(light, &light_cmds, "LED strip PWM controls", NULL),
     SHELL_CMD(test, NULL, "Run WiFi+BLE coex test", cmd_test_wifi_ble),
     SHELL_SUBCMD_SET_END);
 

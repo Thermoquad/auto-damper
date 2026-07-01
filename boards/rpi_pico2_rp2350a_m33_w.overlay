@@ -24,6 +24,39 @@
 		min-pulse = <500000>;
 		max-pulse = <2500000>;
 	};
+
+	/* Light control PWM outputs. Both channels live on PWM slice 7
+	 * so they share the frequency counter (fine, we drive both
+	 * strips at the same PWM frequency) but keep independent duty
+	 * cycles. GP15 (7B) is the desk strip's control input via level
+	 * shifter; GP14 (7A) is reserved for the tent-strip bank. */
+	lights {
+		compatible = "pwm-leds";
+
+		desk_light: desk_light {
+			label = "desk-light-ctrl";
+			pwms = <&pwm 15 PWM_USEC(100) PWM_POLARITY_NORMAL>;
+		};
+	};
+};
+
+&pinctrl {
+	pwm_ch7b_default: pwm_ch7b_default {
+		group1 {
+			pinmux = <PWM_7B_P15>;
+		};
+	};
+};
+
+&pwm {
+	pinctrl-0 = <&pwm_ch7b_default>;
+	pinctrl-names = "default";
+	/* divider-int-7 unset: driver picks the divider that matches
+	 * whichever period we request at runtime. Slice counter is 16
+	 * bits, so at 150MHz peripheral clock the achievable frequency
+	 * range covers ~2.3kHz upward with divider=1 and everything
+	 * below that with a larger divider. */
+	status = "okay";
 };
 
 &pio1 {
