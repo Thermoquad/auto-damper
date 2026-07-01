@@ -30,6 +30,22 @@ static const uint32_t sweep_widths_ms[] = {
 };
 #define SWEEP_GAP_MS 2000
 
+/* Polling-mode sniff: the edge-interrupt approach dropped events
+ * (only 7 of 20 expected edges captured for 10 button taps) AND the
+ * gpio_pin_get_raw() readback lies on RP2350 in this Zephyr build
+ * (returns the OUT register, not the actual pad state). Polling with
+ * a direct SIO register read fixes both.
+ *
+ * 200us poll period = 5 kHz. Well below the shortest observed pulse
+ * (~250 ms) but still low CPU load (a single-word memory read
+ * per iteration). */
+#define POLL_PERIOD_US 200
+
+/* Direct read of the RP2350 SIO GPIO_IN register - authoritative
+ * for the real pad state, independent of Zephyr's GPIO driver
+ * quirks. GP0-31 map to bits 0-31. */
+#define RP2350_SIO_GPIO_IN (*(volatile uint32_t *)0xD0000004U)
+
 //////////////////////////////////////////////////////////////
 // State
 //////////////////////////////////////////////////////////////
@@ -43,7 +59,6 @@ enum pin_mode {
 };
 static enum pin_mode current_mode = MODE_OUTPUT;
 
-static struct gpio_callback edge_cb_data;
 static struct light_sniff_event sniff_buf[SNIFF_BUF_SIZE];
 static atomic_t sniff_head; /* monotonic write index */
 static atomic_t sniff_tail; /* monotonic read index */
@@ -54,9 +69,7 @@ static atomic_t sniff_tail; /* monotonic read index */
 
 static int enter_output_mode(void);
 static int enter_sniff_mode(void);
-static void edge_callback(const struct device *dev,
-                          struct gpio_callback *cb,
-                          gpio_port_pins_t pins);
+static bool read_pad(void);
 
 //////////////////////////////////////////////////////////////
 // Public API
@@ -135,8 +148,11 @@ size_t light_bench_sniff_drain(struct light_sniff_event *out,
 
 const char *light_bench_state_str(void)
 {
-  int raw = gpio_pin_get_raw(bench_gpio.port, bench_gpio.pin);
-  bool high = (raw > 0);
+  /* Read via SIO register - Zephyr's gpio_pin_get_raw() is unreliable
+   * on RP2350 in this build (returns cached OUT rather than pad IN),
+   * which was the source of the misleading "always LOW" reports we
+   * saw during output-mode testing. */
+  bool high = read_pad();
   if (current_mode == MODE_OUTPUT) {
     return high ? "output / HIGH (idle)" : "output / LOW (holding press)";
   }
@@ -163,13 +179,13 @@ SYS_INIT(light_init, APPLICATION, 90);
 // Helper Functions
 //////////////////////////////////////////////////////////////
 
+static bool read_pad(void)
+{
+  return (RP2350_SIO_GPIO_IN & (1U << bench_gpio.pin)) != 0;
+}
+
 static int enter_output_mode(void)
 {
-  if (current_mode == MODE_SNIFF) {
-    /* Detach edge interrupt before repurposing the pin. */
-    gpio_pin_interrupt_configure_dt(&bench_gpio, GPIO_INT_DISABLE);
-    gpio_remove_callback(bench_gpio.port, &edge_cb_data);
-  }
   int rc = gpio_pin_configure_dt(&bench_gpio, GPIO_OUTPUT_INACTIVE);
   if (rc) {
     LOG_ERR("configure OUTPUT: %d", rc);
@@ -186,32 +202,41 @@ static int enter_sniff_mode(void)
     LOG_ERR("configure INPUT: %d", rc);
     return rc;
   }
-  gpio_init_callback(&edge_cb_data, edge_callback, BIT(bench_gpio.pin));
-  rc = gpio_add_callback(bench_gpio.port, &edge_cb_data);
-  if (rc) {
-    LOG_ERR("add_callback: %d", rc);
-    return rc;
-  }
-  rc = gpio_pin_interrupt_configure_dt(&bench_gpio, GPIO_INT_EDGE_BOTH);
-  if (rc) {
-    LOG_ERR("interrupt_configure: %d", rc);
-    gpio_remove_callback(bench_gpio.port, &edge_cb_data);
-    return rc;
-  }
   current_mode = MODE_SNIFF;
   return 0;
 }
 
-static void edge_callback(const struct device *dev,
-                          struct gpio_callback *cb,
-                          gpio_port_pins_t pins)
+//////////////////////////////////////////////////////////////
+// Sniff polling thread
+//
+// Polls SIO_GPIO_IN every POLL_PERIOD_US and records every transition
+// to the ring buffer. Runs continuously; when the mode isn't SNIFF
+// it just waits long enough to check mode again, wasting negligible
+// CPU.
+//////////////////////////////////////////////////////////////
+
+static void sniff_poll_thread(void *a, void *b, void *c)
 {
-  ARG_UNUSED(cb);
-  ARG_UNUSED(pins);
-  int raw = gpio_pin_get_raw(dev, bench_gpio.pin);
-  atomic_val_t idx = atomic_inc(&sniff_head);
-  sniff_buf[idx % SNIFF_BUF_SIZE] = (struct light_sniff_event){
-      .timestamp_us = k_ticks_to_us_floor64(k_uptime_ticks()),
-      .level_high = (raw > 0),
-  };
+  ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+  bool last = read_pad();
+  while (1) {
+    if (current_mode != MODE_SNIFF) {
+      k_sleep(K_MSEC(50));
+      last = read_pad();
+      continue;
+    }
+    bool now = read_pad();
+    if (now != last) {
+      last = now;
+      atomic_val_t idx = atomic_inc(&sniff_head);
+      sniff_buf[idx % SNIFF_BUF_SIZE] = (struct light_sniff_event){
+          .timestamp_us = k_ticks_to_us_floor64(k_uptime_ticks()),
+          .level_high = now,
+      };
+    }
+    k_busy_wait(POLL_PERIOD_US);
+  }
 }
+
+K_THREAD_DEFINE(sniff_tid, 1024, sniff_poll_thread, NULL, NULL, NULL,
+                7, 0, 1000);
