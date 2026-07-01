@@ -983,25 +983,25 @@ static int cmd_ota_auto_revert(const struct shell *sh, size_t argc,
 // or generate our own pulses (output mode).
 //////////////////////////////////////////////////////////////
 
-static int cmd_light_desk_high(const struct shell *sh,
+static int cmd_light_bench_high(const struct shell *sh,
                                size_t argc, char **argv)
 {
   ARG_UNUSED(argc); ARG_UNUSED(argv);
-  int rc = light_desk_high();
-  shell_print(sh, "desk: %s", light_desk_state_str());
+  int rc = light_bench_high();
+  shell_print(sh, "bench: %s", light_bench_state_str());
   return rc;
 }
 
-static int cmd_light_desk_low(const struct shell *sh,
+static int cmd_light_bench_low(const struct shell *sh,
                               size_t argc, char **argv)
 {
   ARG_UNUSED(argc); ARG_UNUSED(argv);
-  int rc = light_desk_low();
-  shell_print(sh, "desk: %s", light_desk_state_str());
+  int rc = light_bench_low();
+  shell_print(sh, "bench: %s", light_bench_state_str());
   return rc;
 }
 
-static int cmd_light_desk_pulse(const struct shell *sh,
+static int cmd_light_bench_pulse(const struct shell *sh,
                                 size_t argc, char **argv)
 {
   uint32_t ms = strtoul(argv[1], NULL, 10);
@@ -1009,50 +1009,50 @@ static int cmd_light_desk_pulse(const struct shell *sh,
     shell_error(sh, "pulse ms must be 1 - 60000");
     return -EINVAL;
   }
-  shell_print(sh, "desk: pulse LOW %u ms", ms);
-  int rc = light_desk_pulse(ms);
-  shell_print(sh, "desk: %s", light_desk_state_str());
+  shell_print(sh, "bench: pulse LOW %u ms", ms);
+  int rc = light_bench_pulse(ms);
+  shell_print(sh, "bench: %s", light_bench_state_str());
   return rc;
 }
 
-static int cmd_light_desk_sweep(const struct shell *sh,
+static int cmd_light_bench_sweep(const struct shell *sh,
                                 size_t argc, char **argv)
 {
   ARG_UNUSED(argc); ARG_UNUSED(argv);
   shell_print(sh,
-      "desk: geometric sweep 10-2000 ms with 2 s gaps. ~20 s total. "
+      "bench: geometric sweep 10-2000 ms with 2 s gaps. ~20 s total. "
       "Watch the strip and note which pulse (if any) changes it.");
-  int rc = light_desk_sweep();
-  shell_print(sh, "desk: sweep done, %s", light_desk_state_str());
+  int rc = light_bench_sweep();
+  shell_print(sh, "bench: sweep done, %s", light_bench_state_str());
   return rc;
 }
 
-static int cmd_light_desk_sniff(const struct shell *sh,
+static int cmd_light_bench_sniff(const struct shell *sh,
                                 size_t argc, char **argv)
 {
   ARG_UNUSED(argc); ARG_UNUSED(argv);
-  int rc = light_desk_sniff_start();
+  int rc = light_bench_sniff_start();
   if (rc) {
     shell_error(sh, "sniff start: %d", rc);
     return rc;
   }
   shell_print(sh,
-      "desk: sniffing GP15. Press buttons on the OEM controller, then "
-      "'damper light desk dump' to see the recorded pulse widths.");
+      "bench: sniffing GP15. Press buttons on the OEM controller, then "
+      "'damper light bench dump' to see the recorded pulse widths.");
   return 0;
 }
 
-static int cmd_light_desk_dump(const struct shell *sh,
+static int cmd_light_bench_dump(const struct shell *sh,
                                size_t argc, char **argv)
 {
   ARG_UNUSED(argc); ARG_UNUSED(argv);
   struct light_sniff_event evs[128];
-  size_t n = light_desk_sniff_drain(evs, ARRAY_SIZE(evs));
+  size_t n = light_bench_sniff_drain(evs, ARRAY_SIZE(evs));
   if (n == 0) {
-    shell_print(sh, "desk: no sniff events buffered");
+    shell_print(sh, "bench: no sniff events buffered");
     return 0;
   }
-  shell_print(sh, "desk: %zu edges", n);
+  shell_print(sh, "bench: %zu edges", n);
   /* Print each edge as "<new_level> @ <ts_ms> (Δ <width_ms>)". The
    * width is the duration of the *previous* level ending at this
    * transition, so the reader can quickly spot short pulses. */
@@ -1068,39 +1068,39 @@ static int cmd_light_desk_dump(const struct shell *sh,
   return 0;
 }
 
-static int cmd_light_desk_status(const struct shell *sh,
+static int cmd_light_bench_status(const struct shell *sh,
                                  size_t argc, char **argv)
 {
   ARG_UNUSED(argc); ARG_UNUSED(argv);
-  shell_print(sh, "desk: %s", light_desk_state_str());
+  shell_print(sh, "bench: %s", light_bench_state_str());
   return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-    light_desk_cmds,
+    light_bench_cmds,
     SHELL_CMD(high, NULL, "Drive GP15 HIGH (idle)",
-              cmd_light_desk_high),
+              cmd_light_bench_high),
     SHELL_CMD(low, NULL, "Drive GP15 LOW (hold press)",
-              cmd_light_desk_low),
+              cmd_light_bench_low),
     SHELL_CMD_ARG(pulse, NULL,
-                  "damper light desk pulse <ms> - LOW for ms then HIGH",
-                  cmd_light_desk_pulse, 2, 0),
+                  "damper light bench pulse <ms> - LOW for ms then HIGH",
+                  cmd_light_bench_pulse, 2, 0),
     SHELL_CMD(sweep, NULL,
               "Automated geometric pulse sweep 10-2000 ms",
-              cmd_light_desk_sweep),
+              cmd_light_bench_sweep),
     SHELL_CMD(sniff, NULL,
               "Enter sniff mode: log edges from OEM controller",
-              cmd_light_desk_sniff),
+              cmd_light_bench_sniff),
     SHELL_CMD(dump, NULL,
               "Dump buffered sniff edges as pulse-width report",
-              cmd_light_desk_dump),
+              cmd_light_bench_dump),
     SHELL_CMD(status, NULL, "Show current pin mode / level",
-              cmd_light_desk_status),
+              cmd_light_bench_status),
     SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
     light_cmds,
-    SHELL_CMD(desk, &light_desk_cmds, "Desk strip control", NULL),
+    SHELL_CMD(bench, &light_bench_cmds, "Bench strip control", NULL),
     SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(

@@ -36,9 +36,9 @@
 	 * `gpio_pin_set(0)` = release. */
 	lights {
 		compatible = "gpio-leds";
-		desk_light: desk_light {
+		bench_light: bench_light {
 			gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
-			label = "desk-light-ctrl";
+			label = "bench-light-ctrl";
 		};
 	};
 };

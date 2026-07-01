@@ -34,8 +34,8 @@ static const uint32_t sweep_widths_ms[] = {
 // State
 //////////////////////////////////////////////////////////////
 
-static const struct gpio_dt_spec desk_gpio =
-    GPIO_DT_SPEC_GET(DT_NODELABEL(desk_light), gpios);
+static const struct gpio_dt_spec bench_gpio =
+    GPIO_DT_SPEC_GET(DT_NODELABEL(bench_light), gpios);
 
 enum pin_mode {
   MODE_OUTPUT,
@@ -62,43 +62,43 @@ static void edge_callback(const struct device *dev,
 // Public API
 //////////////////////////////////////////////////////////////
 
-int light_desk_high(void)
+int light_bench_high(void)
 {
   int rc = enter_output_mode();
   if (rc) return rc;
   /* "Inactive" per the ACTIVE_LOW binding = HIGH on the wire. */
-  return gpio_pin_set_dt(&desk_gpio, 0);
+  return gpio_pin_set_dt(&bench_gpio, 0);
 }
 
-int light_desk_low(void)
+int light_bench_low(void)
 {
   int rc = enter_output_mode();
   if (rc) return rc;
-  return gpio_pin_set_dt(&desk_gpio, 1);
+  return gpio_pin_set_dt(&bench_gpio, 1);
 }
 
-int light_desk_pulse(uint32_t ms)
+int light_bench_pulse(uint32_t ms)
 {
   int rc = enter_output_mode();
   if (rc) return rc;
-  rc = gpio_pin_set_dt(&desk_gpio, 1);
+  rc = gpio_pin_set_dt(&bench_gpio, 1);
   if (rc) return rc;
   k_msleep(ms);
-  return gpio_pin_set_dt(&desk_gpio, 0);
+  return gpio_pin_set_dt(&bench_gpio, 0);
 }
 
-int light_desk_sweep(void)
+int light_bench_sweep(void)
 {
   int rc = enter_output_mode();
   if (rc) return rc;
   /* Idle HIGH before the first pulse. */
-  rc = gpio_pin_set_dt(&desk_gpio, 0);
+  rc = gpio_pin_set_dt(&bench_gpio, 0);
   if (rc) return rc;
 
   for (size_t i = 0; i < ARRAY_SIZE(sweep_widths_ms); i++) {
     k_msleep(SWEEP_GAP_MS);
     LOG_INF("sweep: pulse %u ms", sweep_widths_ms[i]);
-    rc = light_desk_pulse(sweep_widths_ms[i]);
+    rc = light_bench_pulse(sweep_widths_ms[i]);
     if (rc) return rc;
   }
   k_msleep(SWEEP_GAP_MS);
@@ -106,19 +106,19 @@ int light_desk_sweep(void)
   return 0;
 }
 
-int light_desk_sniff_start(void)
+int light_bench_sniff_start(void)
 {
   atomic_set(&sniff_head, 0);
   atomic_set(&sniff_tail, 0);
   return enter_sniff_mode();
 }
 
-int light_desk_sniff_stop(void)
+int light_bench_sniff_stop(void)
 {
   return enter_output_mode();
 }
 
-size_t light_desk_sniff_drain(struct light_sniff_event *out,
+size_t light_bench_sniff_drain(struct light_sniff_event *out,
                               size_t max_events)
 {
   atomic_val_t head = atomic_get(&sniff_head);
@@ -133,9 +133,9 @@ size_t light_desk_sniff_drain(struct light_sniff_event *out,
   return to_copy;
 }
 
-const char *light_desk_state_str(void)
+const char *light_bench_state_str(void)
 {
-  int raw = gpio_pin_get_raw(desk_gpio.port, desk_gpio.pin);
+  int raw = gpio_pin_get_raw(bench_gpio.port, bench_gpio.pin);
   bool high = (raw > 0);
   if (current_mode == MODE_OUTPUT) {
     return high ? "output / HIGH (idle)" : "output / LOW (holding press)";
@@ -149,8 +149,8 @@ const char *light_desk_state_str(void)
 
 static int light_init(void)
 {
-  if (!gpio_is_ready_dt(&desk_gpio)) {
-    LOG_ERR("desk_light GPIO not ready");
+  if (!gpio_is_ready_dt(&bench_gpio)) {
+    LOG_ERR("bench_light GPIO not ready");
     return -ENODEV;
   }
   /* Default: output mode, driving HIGH (idle). Safe for both wiring
@@ -167,10 +167,10 @@ static int enter_output_mode(void)
 {
   if (current_mode == MODE_SNIFF) {
     /* Detach edge interrupt before repurposing the pin. */
-    gpio_pin_interrupt_configure_dt(&desk_gpio, GPIO_INT_DISABLE);
-    gpio_remove_callback(desk_gpio.port, &edge_cb_data);
+    gpio_pin_interrupt_configure_dt(&bench_gpio, GPIO_INT_DISABLE);
+    gpio_remove_callback(bench_gpio.port, &edge_cb_data);
   }
-  int rc = gpio_pin_configure_dt(&desk_gpio, GPIO_OUTPUT_INACTIVE);
+  int rc = gpio_pin_configure_dt(&bench_gpio, GPIO_OUTPUT_INACTIVE);
   if (rc) {
     LOG_ERR("configure OUTPUT: %d", rc);
     return rc;
@@ -181,21 +181,21 @@ static int enter_output_mode(void)
 
 static int enter_sniff_mode(void)
 {
-  int rc = gpio_pin_configure_dt(&desk_gpio, GPIO_INPUT);
+  int rc = gpio_pin_configure_dt(&bench_gpio, GPIO_INPUT);
   if (rc) {
     LOG_ERR("configure INPUT: %d", rc);
     return rc;
   }
-  gpio_init_callback(&edge_cb_data, edge_callback, BIT(desk_gpio.pin));
-  rc = gpio_add_callback(desk_gpio.port, &edge_cb_data);
+  gpio_init_callback(&edge_cb_data, edge_callback, BIT(bench_gpio.pin));
+  rc = gpio_add_callback(bench_gpio.port, &edge_cb_data);
   if (rc) {
     LOG_ERR("add_callback: %d", rc);
     return rc;
   }
-  rc = gpio_pin_interrupt_configure_dt(&desk_gpio, GPIO_INT_EDGE_BOTH);
+  rc = gpio_pin_interrupt_configure_dt(&bench_gpio, GPIO_INT_EDGE_BOTH);
   if (rc) {
     LOG_ERR("interrupt_configure: %d", rc);
-    gpio_remove_callback(desk_gpio.port, &edge_cb_data);
+    gpio_remove_callback(bench_gpio.port, &edge_cb_data);
     return rc;
   }
   current_mode = MODE_SNIFF;
@@ -208,7 +208,7 @@ static void edge_callback(const struct device *dev,
 {
   ARG_UNUSED(cb);
   ARG_UNUSED(pins);
-  int raw = gpio_pin_get_raw(dev, desk_gpio.pin);
+  int raw = gpio_pin_get_raw(dev, bench_gpio.pin);
   atomic_val_t idx = atomic_inc(&sniff_head);
   sniff_buf[idx % SNIFF_BUF_SIZE] = (struct light_sniff_event){
       .timestamp_us = k_ticks_to_us_floor64(k_uptime_ticks()),

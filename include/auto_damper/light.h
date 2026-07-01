@@ -16,21 +16,21 @@
  */
 
 /* Output-mode primitives. Any of these implicitly leaves the pin in
- * output mode; call light_desk_sniff_start() afterward to re-enter
+ * output mode; call light_bench_sniff_start() afterward to re-enter
  * sniff. */
-int light_desk_high(void);          /* release: pin idles HIGH via shifter */
-int light_desk_low(void);           /* hold LOW indefinitely */
-int light_desk_pulse(uint32_t ms);  /* LOW for ms, then HIGH */
+int light_bench_high(void);          /* release: pin idles HIGH via shifter */
+int light_bench_low(void);           /* hold LOW indefinitely */
+int light_bench_pulse(uint32_t ms);  /* LOW for ms, then HIGH */
 
 /* Automated geometric sweep of pulse widths (10, 20, 40, ... 2000ms)
  * with 2000ms HIGH between each. Blocks the caller until done. */
-int light_desk_sweep(void);
+int light_bench_sweep(void);
 
 /* Sniff mode. GP15 becomes a high-Z input with an edge callback that
  * records timestamps of every rising and falling edge into a ring
  * buffer. */
-int light_desk_sniff_start(void);
-int light_desk_sniff_stop(void);
+int light_bench_sniff_start(void);
+int light_bench_sniff_stop(void);
 
 /* Sniff event: microsecond timestamp of a transition, and the new
  * pin level after that transition. */
@@ -42,11 +42,11 @@ struct light_sniff_event {
 /* Pull recorded events out of the ring buffer, oldest first. Empties
  * what it returns from the buffer. Returns the number of events
  * written. */
-size_t light_desk_sniff_drain(struct light_sniff_event *out,
+size_t light_bench_sniff_drain(struct light_sniff_event *out,
                               size_t max_events);
 
 /* Current pin state: "output/high", "output/low", "sniff/idle-high",
  * "sniff/idle-low". */
-const char *light_desk_state_str(void);
+const char *light_bench_state_str(void);
 
 #endif
