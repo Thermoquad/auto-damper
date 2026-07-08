@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/http/server.h>
@@ -7,9 +12,6 @@
 #include <zephyr/net/websocket.h>
 #include <zephyr/zbus/zbus.h>
 #include <bootutil/bootutil_public.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
 
 #include <auto_damper/damper.h>
 #include <auto_damper/heater.h>
@@ -65,8 +67,41 @@ static struct k_work_q ws_work_q;
 static char ws_tx_buf[WS_BUF_SIZE];
 static struct k_mutex ws_tx_mutex;
 
+/* Send errors that indicate the peer is definitively gone. On these
+ * we release the WS slot immediately rather than waiting for the
+ * next recv poll to notice - the recv work item runs on a 10 ms
+ * cadence and repeated failed sends against a dead peer can leak
+ * internally-allocated net_pkts inside websocket_send_msg while it
+ * tries to write into a closed TCP context. */
+static bool ws_fatal_send_err(int err)
+{
+  return err == -EPIPE       /* peer closed on us */
+      || err == -ECONNRESET  /* RST from peer */
+      || err == -ENOTCONN    /* socket already torn down */
+      || err == -EBADF       /* fd number is stale */
+      || err == -ESHUTDOWN;  /* our end already half-closed */
+}
+
+static void ws_teardown_slot(int slot)
+{
+  if (slot < 0 || slot >= WS_MAX_CLIENTS || ws_clients[slot].sock < 0) {
+    return;
+  }
+  int sock = ws_clients[slot].sock;
+  LOG_INF("WS slot %d torn down after fatal send error", slot);
+  websocket_unregister(sock);
+  ws_clients[slot].sock = -1;
+}
+
+/* Both ws_broadcast and ws_send_to acquire ws_tx_mutex internally so
+ * every caller is protected from racing another thread's teardown of
+ * the same slot. Zephyr mutexes are recursive, so callers that
+ * already hold the mutex (subscriber loop, OTA progress callback)
+ * continue to work unchanged. */
+
 static void ws_broadcast(const char *json, int len)
 {
+  k_mutex_lock(&ws_tx_mutex, K_FOREVER);
   for (int i = 0; i < WS_MAX_CLIENTS; i++) {
     if (ws_clients[i].sock < 0) {
       continue;
@@ -77,19 +112,32 @@ static void ws_broadcast(const char *json, int len)
         WS_SEND_TIMEOUT_MS);
     if (ret < 0 && ret != -EAGAIN) {
       LOG_DBG("WS send failed slot %d: %d", i, ret);
+      if (ws_fatal_send_err(ret)) {
+        ws_teardown_slot(i);
+      }
     }
   }
+  k_mutex_unlock(&ws_tx_mutex);
 }
 
 static void ws_send_to(int slot, const char *json, int len)
 {
+  k_mutex_lock(&ws_tx_mutex, K_FOREVER);
   if (slot < 0 || slot >= WS_MAX_CLIENTS || ws_clients[slot].sock < 0) {
+    k_mutex_unlock(&ws_tx_mutex);
     return;
   }
-  websocket_send_msg(ws_clients[slot].sock,
+  int ret = websocket_send_msg(ws_clients[slot].sock,
       (const uint8_t *)json, len,
       WEBSOCKET_OPCODE_DATA_TEXT, false, true,
       WS_SEND_TIMEOUT_MS);
+  if (ret < 0 && ret != -EAGAIN) {
+    LOG_DBG("WS send_to slot %d failed: %d", slot, ret);
+    if (ws_fatal_send_err(ret)) {
+      ws_teardown_slot(slot);
+    }
+  }
+  k_mutex_unlock(&ws_tx_mutex);
 }
 
 //////////////////////////////////////////////////////////////
